@@ -12,7 +12,7 @@ Security posture of optionfactory's developer workstations, for ISO/IEC 27001. O
 
 The package, with its hourly systemd timer, is in [linux-packages](https://github.com/optionfactory/linux-packages). It
 runs only once `/etc/optionfactory-posture/config` exists, setting `POSTURE_COLLECTOR` and `POSTURE_TANG_URL`;
-optionfactory's internal `optionfactory-workstation` package provides it. The deployment of the collector and the
+optionfactory's internal `optionfactory-workstation` and `optionfactory-laptop` packages provide it. The deployment of the collector and the
 alarm is in `internal-services`.
 
 Threat model, data protection and how to report a vulnerability: [SECURITY.md](SECURITY.md).
