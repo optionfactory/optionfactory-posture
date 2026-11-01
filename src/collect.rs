@@ -3,8 +3,8 @@ use crate::report::{Report, Status};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::routing::post;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::routing::{get, post};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
@@ -22,6 +22,8 @@ const MOST_REPORTS: usize = 5_000;
 const REPORT_RETENTION: SignedDuration = SignedDuration::from_hours(30 * 24);
 /// Twelve months, the time between two audits.
 const SUMMARY_RETENTION: SignedDuration = SignedDuration::from_hours(365 * 24);
+/// The OptionFactory glyph in the colour of this service (tools/favicons in internal-services).
+const FAVICON: &[u8] = include_bytes!("../branding/favicon.ico");
 
 /// What is left of a day of reports after thirty days: the worst outcome of each check, without times or details.
 #[derive(Serialize, Deserialize)]
@@ -31,8 +33,8 @@ struct Summary {
     checks: BTreeMap<String, Status>,
 }
 
-/// Stores the reports POSTed by the workstations, one directory per machine, and summarizes them after thirty days. It
-/// sits behind nginx, which alone can reach its socket.
+/// Stores the reports POSTed by the workstations, one directory per machine, and summarizes them after thirty days;
+/// besides them it serves only its favicon. It sits behind nginx, which alone can reach its socket.
 pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -51,6 +53,18 @@ pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf) -> Result<(
         tokio::spawn(summarize_expired_daily(reports.clone()));
         let app = Router::new()
             .route("/reports", post(store))
+            .route(
+                "/favicon.ico",
+                get(|| async {
+                    (
+                        [
+                            (header::CONTENT_TYPE, "image/x-icon"),
+                            (header::CACHE_CONTROL, "max-age=86400"),
+                        ],
+                        FAVICON,
+                    )
+                }),
+            )
             .layer(DefaultBodyLimit::max(16 * 1024))
             .with_state((reports, machines));
         axum::serve(listener, app)

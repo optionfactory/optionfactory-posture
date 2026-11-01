@@ -41,7 +41,8 @@ admin compares the hash with the one the machine prints (`optionfactory-posture 
 Whoever takes a token can write reports under that machine's name, as whoever has root on it already can; taking the
 line off the list revokes it.
 The collector listens only on a Unix socket behind nginx (on the instance, mounted into the nginx container alone) and
-runs as an unprivileged user without network access.
+runs as an unprivileged user without network access. It answers `POST /reports` and `GET /favicon.ico`, a fixed file
+built into the binary; nothing else.
 
 Within that scope:
 
