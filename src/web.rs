@@ -1,6 +1,6 @@
 use crate::collect::Summary;
 use crate::machines;
-use crate::report::Status;
+use crate::report::{Report, Status};
 use crate::review;
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, State};
@@ -301,37 +301,33 @@ fn render_overview(web: &Web, email: &str) -> Result<Option<String>, String> {
     let machines = machines::read(&web.machines)?;
     let pending = machines::pending(&web.reports, &machines)?;
     let now = Timestamp::now();
-    let mut columns: Vec<String> = Vec::new();
     let mut rows = Vec::new();
     // one machine at a time: only its latest report is kept
     for machine in &machines {
         let (reports, findings) = review::reviewed(&web.reports, machine, now);
-        let latest = reports.into_iter().next();
-        for check in latest.iter().flat_map(|latest| &latest.checks) {
-            if !columns.contains(&check.name) {
-                columns.push(check.name.clone());
-            }
-        }
-        rows.push((machine, latest, findings));
+        rows.push((machine, reports.into_iter().next(), findings));
     }
+    // the ones needing attention first
+    rows.sort_by_key(|(machine, _, findings)| (findings.is_empty(), machine.name.clone()));
 
-    let mut body = String::from("<h1>Workstations</h1>");
     let attention = rows.iter().filter(|(_, _, findings)| !findings.is_empty()).count();
+    let mut body = String::from("<h1>Workstations</h1><p class=\"counts\">");
     let _ = write!(
         body,
-        "<p class=\"lead\">{} approved, {attention} needing attention, {} waiting for approval.</p>",
+        "<span>{} approved</span><span class=\"{}\">{attention} needing attention</span><span>{} waiting for \
+         approval</span></p>",
         machines.len(),
+        if attention > 0 { "fail" } else { "pass" },
         pending.len()
     );
-    body.push_str("<div class=\"scroll\"><table><thead><tr><th>Machine</th><th>Owner</th><th>Last report</th>");
-    for column in &columns {
-        let _ = write!(body, "<th class=\"check\"><span>{}</span></th>", escape(column));
-    }
-    body.push_str("</tr></thead><tbody>");
+    body.push_str(
+        "<div class=\"scroll\"><table class=\"machines stack\"><thead><tr><th>Machine</th><th>Last report</th>\
+         <th>State</th></tr></thead><tbody>",
+    );
     for (machine, latest, findings) in &rows {
         let _ = write!(
             body,
-            "<tr><td><a href=\"/machines/{name}\">{name}</a></td><td>{}</td><td class=\"time\">{}</td>",
+            "<tr><td><a href=\"/machines/{name}\">{name}</a><div class=\"owner\">{}</div></td><td class=\"time\">{}</td><td>",
             escape(&machine.owner),
             latest
                 .as_ref()
@@ -339,36 +335,19 @@ fn render_overview(web: &Web, email: &str) -> Result<Option<String>, String> {
                 .unwrap_or_else(|| "never".to_string()),
             name = escape(&machine.name),
         );
-        for column in &columns {
-            let check = latest
-                .iter()
-                .flat_map(|latest| &latest.checks)
-                .find(|check| &check.name == column);
-            match check {
-                Some(check) => {
-                    let _ = write!(
-                        body,
-                        "<td class=\"check {}\" title=\"{}\">{}</td>",
-                        status_class(check.status),
-                        escape(&check.detail),
-                        status_class(check.status)
-                    );
-                }
-                None => body.push_str("<td class=\"check\"></td>"),
-            }
+        if let Some(latest) = latest {
+            body.push_str(&not_passing(
+                latest.checks.iter().map(|check| (&check.name, check.status)),
+            ));
         }
-        body.push_str("</tr>");
         if !findings.is_empty() {
-            let _ = write!(
-                body,
-                "<tr class=\"findings\"><td colspan=\"{}\"><ul>",
-                columns.len() + 3
-            );
+            body.push_str("<ul class=\"attention\">");
             for finding in findings {
                 let _ = write!(body, "<li>{}</li>", escape(finding));
             }
-            body.push_str("</ul></td></tr>");
+            body.push_str("</ul>");
         }
+        body.push_str("</td></tr>");
     }
     body.push_str("</tbody></table></div>");
 
@@ -379,7 +358,7 @@ fn render_overview(web: &Web, email: &str) -> Result<Option<String>, String> {
         body.push_str(
             "<p>Before approving, the hash must match what <code>optionfactory-posture id</code> prints on the \
              machine itself: anyone can send a report under any hostname.</p>\
-             <div class=\"scroll\"><table><thead><tr><th>Hostname</th><th>Machine id</th><th>First seen</th>\
+             <div class=\"scroll\"><table class=\"stack\"><thead><tr><th>Hostname</th><th>Machine id</th><th>First seen</th>\
              <th>Last seen</th><th>Hash of the token</th></tr></thead><tbody>",
         );
         for (hash, machine, last_seen) in &pending {
@@ -389,8 +368,8 @@ fn render_overview(web: &Web, email: &str) -> Result<Option<String>, String> {
                  <td><code>{}</code></td></tr>",
                 escape(&machine.hostname),
                 escape(&machine.machine_id),
-                machine.first_seen,
-                last_seen,
+                minutes(machine.first_seen),
+                minutes(*last_seen),
                 escape(hash)
             );
         }
@@ -429,7 +408,7 @@ fn render_machine(web: &Web, email: &str, name: &str) -> Result<Option<String>, 
             body,
             "<h2>Latest report</h2><dl><dt>Taken</dt><dd>{} ({})</dd><dt>Hostname</dt><dd>{}</dd><dt>System</dt>\
              <dd>{}</dd><dt>Kernel</dt><dd>{}</dd><dt>Agent</dt><dd>{}</dd></dl>",
-            latest.taken_at,
+            minutes(latest.taken_at),
             ago(latest.taken_at, now),
             escape(&latest.hostname),
             escape(&latest.os.pretty_name),
@@ -442,7 +421,7 @@ fn render_machine(web: &Web, email: &str, name: &str) -> Result<Option<String>, 
         for check in &latest.checks {
             let _ = write!(
                 body,
-                "<tr><td>{}</td><td class=\"check {}\">{}</td><td class=\"detail\">{}</td></tr>",
+                "<tr><td>{}</td><td><span class=\"chip {}\">{}</span></td><td class=\"detail\">{}</td></tr>",
                 escape(&check.name),
                 status_class(check.status),
                 status_class(check.status),
@@ -456,13 +435,29 @@ fn render_machine(web: &Web, email: &str, name: &str) -> Result<Option<String>, 
     if reports.is_empty() {
         body.push_str("<p>No reports.</p>");
     } else {
-        body.push_str("<div class=\"scroll\"><table><thead><tr><th>Taken</th><th>Not passing</th></tr></thead><tbody>");
+        body.push_str(
+            "<div class=\"scroll\"><table><thead><tr><th>From</th><th>To</th><th>Reports</th><th>State</th></tr>\
+             </thead><tbody>",
+        );
+        // consecutive reports with the same outcomes make one row
+        let state = |report: &Report| not_passing(report.checks.iter().map(|check| (&check.name, check.status)));
+        let mut runs: Vec<(Timestamp, Timestamp, usize, String)> = Vec::new();
         for report in &reports {
+            let current = state(report);
+            match runs.last_mut() {
+                Some((oldest, _, count, last)) if *last == current => {
+                    *oldest = report.taken_at;
+                    *count += 1;
+                }
+                _ => runs.push((report.taken_at, report.taken_at, 1, current)),
+            }
+        }
+        for (oldest, newest, count, state) in &runs {
             let _ = write!(
                 body,
-                "<tr><td class=\"time\">{}</td><td>{}</td></tr>",
-                report.taken_at,
-                not_passing(report.checks.iter().map(|check| (&check.name, check.status)))
+                "<tr><td class=\"time\">{}</td><td class=\"time\">{}</td><td class=\"number\">{count}</td><td>{state}</td></tr>",
+                minutes(*oldest),
+                minutes(*newest)
             );
         }
         body.push_str("</tbody></table></div>");
@@ -494,15 +489,20 @@ fn render_machine(web: &Web, email: &str, name: &str) -> Result<Option<String>, 
     Ok(Some(page(&machine.name, email, &body)))
 }
 
+/// A time to the minute, in UTC.
+fn minutes(at: Timestamp) -> String {
+    at.strftime("%Y-%m-%d %H:%M").to_string()
+}
+
 fn not_passing<'a>(checks: impl Iterator<Item = (&'a String, Status)>) -> String {
     let failing: Vec<String> = checks
         .filter(|(_, status)| *status != Status::Pass)
-        .map(|(name, status)| format!("<span class=\"{}\">{}</span>", status_class(status), escape(name)))
+        .map(|(name, status)| format!("<span class=\"chip {}\">{}</span>", status_class(status), escape(name)))
         .collect();
     if failing.is_empty() {
-        "<span class=\"pass\">all pass</span>".to_string()
+        "<span class=\"chip pass\">all pass</span>".to_string()
     } else {
-        failing.join(", ")
+        failing.join(" ")
     }
 }
 
@@ -579,45 +579,61 @@ fn page(title: &str, email: &str, body: &str) -> String {
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{} · Posture</title>\
          <link rel=\"icon\" href=\"/favicon.ico\"><style>{STYLE}</style></head><body><header><a href=\"/\">Posture</a>\
-         {account}</header><main>{body}</main></body></html>",
+         {account}</header><main>{body}<p class=\"lead\">Times are UTC.</p></main></body></html>",
         escape(title)
     )
 }
 
 const STYLE: &str = "
-:root { --bg: #f7f8fa; --fg: #1d2330; --muted: #5d6677; --line: #dde1e8; --surface: #ffffff;
-  --pass: #1f7a4a; --pass-bg: #e3f4ea; --fail: #b4232c; --fail-bg: #fbe6e7; --unknown: #8a5a00; --unknown-bg: #fbf0d9;
-  --link: #2b5fb8; color-scheme: light }
-@media (prefers-color-scheme: dark) { :root { --bg: #14171d; --fg: #e4e7ee; --muted: #9aa3b4; --line: #2c323d;
-  --surface: #1b1f27; --pass: #6fd39c; --pass-bg: #173326; --fail: #ff8f95; --fail-bg: #3d1c20; --unknown: #f2c26b;
-  --unknown-bg: #3a2e14; --link: #8fb4ff; color-scheme: dark } }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, sans-serif }
-header { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--line); background: var(--surface) }
-header > a { font-weight: 600; color: var(--fg); text-decoration: none }
-header span { color: var(--muted) }
-main { padding: 1rem; max-width: 80rem; margin: 0 auto }
-a { color: var(--link) }
-h1 { font-size: 1.5rem; margin: 0.5rem 0 0.25rem }
-h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem }
+:root { --bg: #f6f7f9; --fg: #1c2230; --muted: #5f6878; --line: #e1e4ea; --surface: #ffffff; --head: #f0f2f5;
+  --pass: #1d7348; --pass-bg: #e2f3e9; --fail: #a8222b; --fail-bg: #fbe5e6; --unknown: #855600; --unknown-bg: #faefd6;
+  --link: #2758ad; color-scheme: light }
+@media (prefers-color-scheme: dark) { :root { --bg: #13161c; --fg: #e3e6ed; --muted: #98a1b2; --line: #2a303a;
+  --surface: #1a1e26; --head: #20252e; --pass: #72d39f; --pass-bg: #16301f; --fail: #ff9097; --fail-bg: #3b1b1f;
+  --unknown: #f0c46e; --unknown-bg: #382c13; --link: #91b5ff; color-scheme: dark } }
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+  padding: 0.8rem max(1rem, calc((100% - 64rem) / 2)); border-bottom: 1px solid var(--line); background: var(--surface) }
+header > a { font-weight: 650; color: var(--fg); text-decoration: none; letter-spacing: 0.01em }
+header span { color: var(--muted); font-size: 0.9rem }
+main { padding: 1.5rem 1rem 3rem; max-width: 66rem; margin: 0 auto }
+a { color: var(--link); text-decoration: none } a:hover { text-decoration: underline }
+h1 { font-size: 1.6rem; margin: 0 0 0.5rem; text-wrap: balance }
+h2 { font-size: 1.1rem; margin: 2.25rem 0 0.6rem }
+p { max-width: 65ch }
 .lead, .back { color: var(--muted); margin-top: 0 }
-.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface) }
+.counts { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1.25rem }
+.counts span { padding: 0.2rem 0.65rem; border-radius: 999px; background: var(--surface); border: 1px solid var(--line);
+  font-size: 0.85rem; color: var(--muted) }
+.counts span.fail { color: var(--fail); background: var(--fail-bg); border-color: transparent }
+.counts span.pass { color: var(--pass); background: var(--pass-bg); border-color: transparent }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface) }
 table { border-collapse: collapse; width: 100% }
-th, td { padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top }
-th { font-weight: 600; font-size: 0.8rem; color: var(--muted); white-space: nowrap }
+th, td { padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top }
+th { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+  background: var(--head); white-space: nowrap }
 tbody tr:last-child td { border-bottom: 0 }
-td.time { white-space: nowrap; font-variant-numeric: tabular-nums }
-td.check { text-align: center; white-space: nowrap; font-size: 0.8rem }
-td.detail { color: var(--muted); word-break: break-word }
-td.pass, span.pass { color: var(--pass) } td.pass { background: var(--pass-bg) }
-td.fail, span.fail { color: var(--fail); font-weight: 600 } td.fail { background: var(--fail-bg) }
-td.unknown, span.unknown { color: var(--unknown); font-weight: 600 } td.unknown { background: var(--unknown-bg) }
-tr.findings td { color: var(--fail); background: var(--surface) }
-tr.findings ul, ul.attention { margin: 0; padding-left: 1.25rem }
-ul.attention { color: var(--fail) }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem }
-dt { color: var(--muted) } dd { margin: 0 }
+table.machines td:first-child { width: 16rem } table.machines td:nth-child(2) { width: 9rem }
+td.time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted) }
+td.number { text-align: right; font-variant-numeric: tabular-nums }
+td.detail { color: var(--muted); word-break: break-word; font-size: 0.9rem }
+.owner { color: var(--muted); font-size: 0.85rem }
+.chip { display: inline-block; margin: 0 0.25rem 0.25rem 0; padding: 0.05rem 0.5rem; border-radius: 4px;
+  font-size: 0.8rem; font-weight: 550; white-space: nowrap }
+.pass { color: var(--pass) } .chip.pass { background: var(--pass-bg) }
+.fail { color: var(--fail) } .chip.fail { background: var(--fail-bg) }
+.unknown { color: var(--unknown) } .chip.unknown { background: var(--unknown-bg) }
+ul.attention { margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--fail); font-size: 0.9rem }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1.25rem; margin: 0 0 1rem }
+dt { color: var(--muted) } dd { margin: 0; min-width: 0; overflow-wrap: anywhere }
 code { font-size: 0.85em; word-break: break-all }
+@media (max-width: 40rem) {
+  table.stack thead { display: none }
+  table.stack tr { display: block; padding: 0.6rem 0; border-bottom: 1px solid var(--line) }
+  table.stack tbody tr:last-child { border-bottom: 0 }
+  table.stack td { display: block; width: auto !important; border: 0; padding: 0.15rem 0.8rem }
+}
 ";
 
 #[cfg(test)]
