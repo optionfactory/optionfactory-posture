@@ -4,8 +4,8 @@ Security posture of optionfactory's developer workstations, for ISO/IEC 27001. O
 
 - `report`, on every workstation (hourly systemd timer, as root): runs the checks, queues the report and sends the
   queue to the collector.
-- `collect`, on the server: stores the reports of the approved machines, records the unknown ones as pending and
-  summarizes the reports after thirty days.
+- `collect`, on the server: stores the reports of the approved machines, records the unknown ones as pending,
+  summarizes the reports after thirty days and, with a Google login, serves the reports as pages to a list of admins.
 - `review`, on the server: one line per machine that needs attention, and one per pending machine.
 - `pending`, on the server: the pending machines, with the hash of their token.
 - `id`, on a workstation: its name and the hash of its token.
@@ -73,7 +73,7 @@ optionfactory-posture collect --listen <socket> --reports <directory> --machines
 `--listen` (default `/run/optionfactory-posture/collect.sock`) and `--reports` (default
 `/var/lib/optionfactory-posture/reports`) also come from `POSTURE_LISTEN` and `POSTURE_REPORTS`. The collector sits
 behind a reverse proxy on a Unix socket, in a directory only the proxy can reach. It answers `POST /reports` and
-`GET /favicon.ico`.
+`GET /favicon.ico`, and the pages below when given a login.
 
 A report is stored only when it carries the token of a machine on the list (`Authorization: Bearer`), the body (at
 most 16 KiB) is a report and it is not more than an hour ahead. It goes to
@@ -88,6 +88,24 @@ Once a day the collector turns the reports older than thirty days into one summa
 reports. Summaries are deleted after twelve months, the time between two audits. Thirty days of full reports cover the
 review, whose longest margin is a week; the exact times of the reports, which tell when a machine was on, are not kept
 longer.
+
+## Pages
+
+```bash
+POSTURE_OIDC_CLIENT_SECRET=... optionfactory-posture collect ... \
+    --oidc-client-id <id> --public-url https://<host> --admins <list of emails>
+```
+
+With a Google OAuth client (`--oidc-client-id`, `POSTURE_OIDC_CLIENT_ID`; the secret only from
+`POSTURE_OIDC_CLIENT_SECRET`) whose redirect URIs include `<public url>/oidc/callback`, the collector also serves:
+
+- `/`: every machine of the list with its owner, the time of its latest report, the outcome of each check and what the
+  review would report, then the pending machines with the full hash of their token;
+- `/machines/<name>`: the latest report in full, the reports of the last thirty days and the daily summaries.
+
+Only the emails in `--admins` (`POSTURE_ADMINS`, one per line, read again at every request) get in. Sessions last 12
+hours and end when the collector restarts. Without `--oidc-client-id` there are no pages and the collector opens no
+connection.
 
 ## Review and pending
 
@@ -106,8 +124,8 @@ failing longer than its grace: 2 hours for `firewall`, 48 for `security-updates`
 read, so any that cannot be read is reported, as is one stamped more than an hour ahead. Directories of machines no
 longer on the list are skipped.
 
-`pending` prints each pending machine with its hostname, machine id, when it was first and last heard from, and the
-full hash of its token.
+`pending` prints each pending machine as a line for the list of machines, `<name> <owner> <hash>`, with `<owner>` to
+fill in, after a comment with its machine id and when it was first and last heard from.
 
 ## Build and release
 

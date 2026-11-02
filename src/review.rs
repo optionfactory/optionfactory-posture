@@ -24,56 +24,11 @@ fn grace(check: &str) -> SignedDuration {
 pub fn review(reports: &Path, machines: &[Machine]) -> Result<(), String> {
     let now = Timestamp::now();
     for machine in machines {
-        let dir = reports.join(&machine.name);
-        let mut names: Vec<_> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-            .filter(|path| {
-                !path
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-            })
-            .collect();
-        names.sort_by(|a, b| b.cmp(a));
-        let has_reports = !names.is_empty();
-        // all of them, a month at most, so that any unreadable one is reported
-        let mut unreadable = Vec::new();
-        let newest_first: Vec<Report> = names
-            .into_iter()
-            .filter_map(|path| {
-                let report = std::fs::read(&path).map_err(|e| e.to_string());
-                match report.and_then(|bytes| serde_json::from_slice::<Report>(&bytes).map_err(|e| e.to_string())) {
-                    Ok(report) => Some(report),
-                    Err(e) => {
-                        unreadable.push(format!("unreadable report {}: {e}", path.display()));
-                        None
-                    }
-                }
-            })
-            .collect();
-        let mut lines = findings(newest_first.into_iter(), now);
-        lines.extend(unreadable);
-        // reports go after thirty days, summaries after a year: a machine silent that long is told by its summaries
-        let latest_summary = std::fs::read_dir(dir.join("daily"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".json") && !name.starts_with('.'))
-            .max();
-        match (has_reports, latest_summary) {
-            (true, _) => {}
-            (false, Some(day)) => lines.push(format!("no report since {}", day.trim_end_matches(".json"))),
-            (false, None) => lines.push("never reported".to_string()),
-        }
-        for finding in lines {
+        for finding in reviewed(reports, machine, now).1 {
             println!("{} ({}): {finding}", machine.name, machine.owner);
         }
     }
-    for (hash, pending, _) in machines::pending(reports, machines) {
+    for (hash, pending, _) in machines::pending(reports, machines)? {
         println!(
             "{}: waiting for approval since {}, token {}",
             pending.hostname,
@@ -84,8 +39,58 @@ pub fn review(reports: &Path, machines: &[Machine]) -> Result<(), String> {
     Ok(())
 }
 
+/// The reports of a machine, newest first, and what needs attention about it.
+pub fn reviewed(reports: &Path, machine: &Machine, now: Timestamp) -> (Vec<Report>, Vec<String>) {
+    let dir = reports.join(&machine.name);
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter(|path| {
+            !path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+        })
+        .collect();
+    names.sort_by(|a, b| b.cmp(a));
+    let has_reports = !names.is_empty();
+    // all of them, a month at most, so that any unreadable one is reported
+    let mut unreadable = Vec::new();
+    let newest_first: Vec<Report> = names
+        .into_iter()
+        .filter_map(|path| {
+            let report = std::fs::read(&path).map_err(|e| e.to_string());
+            match report.and_then(|bytes| serde_json::from_slice::<Report>(&bytes).map_err(|e| e.to_string())) {
+                Ok(report) => Some(report),
+                Err(e) => {
+                    unreadable.push(format!("unreadable report {}: {e}", path.display()));
+                    None
+                }
+            }
+        })
+        .collect();
+    let mut lines = findings(newest_first.iter(), now);
+    lines.extend(unreadable);
+    // reports go after thirty days, summaries after a year: a machine silent that long is told by its summaries
+    let latest_summary = std::fs::read_dir(dir.join("daily"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json") && !name.starts_with('.'))
+        .max();
+    match (has_reports, latest_summary) {
+        (true, _) => {}
+        (false, Some(day)) => lines.push(format!("no report since {}", day.trim_end_matches(".json"))),
+        (false, None) => lines.push("never reported".to_string()),
+    }
+    (newest_first, lines)
+}
+
 /// Reads back only as far as needed to find when each failing check last passed.
-fn findings(mut newest_first: impl Iterator<Item = Report>, now: Timestamp) -> Vec<String> {
+fn findings<'a>(mut newest_first: impl Iterator<Item = &'a Report>, now: Timestamp) -> Vec<String> {
     let Some(latest) = newest_first.next() else {
         return Vec::new();
     };
@@ -159,23 +164,23 @@ mod tests {
             ]
         };
         assert_eq!(
-            findings(newest_first().into_iter(), now),
+            findings(newest_first().iter(), now),
             ["firewall failing since 2026-10-26T10:00:00Z: inactive"]
         );
-        assert!(findings(newest_first().into_iter().take(2), now).is_empty());
+        assert!(findings(newest_first().iter().take(2), now).is_empty());
     }
 
     #[test]
     fn a_silent_machine_is_reported() {
         let now: Timestamp = "2026-11-10T00:00:00Z".parse().unwrap();
-        let findings = findings([report("2026-11-01T00:00:00Z", Status::Pass)].into_iter(), now);
+        let findings = findings([report("2026-11-01T00:00:00Z", Status::Pass)].iter(), now);
         assert_eq!(findings, ["no report since 2026-11-01T00:00:00Z"]);
     }
 
     #[test]
     fn a_report_from_the_future_is_reported() {
         let now: Timestamp = "2026-10-26T12:00:00Z".parse().unwrap();
-        let findings = findings([report("2026-10-27T12:00:00Z", Status::Pass)].into_iter(), now);
+        let findings = findings([report("2026-10-27T12:00:00Z", Status::Pass)].iter(), now);
         assert_eq!(findings, ["report from the future: 2026-10-27T12:00:00Z"]);
     }
 }

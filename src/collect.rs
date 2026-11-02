@@ -1,5 +1,6 @@
 use crate::machines;
 use crate::report::{Report, Status};
+use crate::web;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
@@ -27,15 +28,16 @@ const FAVICON: &[u8] = include_bytes!("../branding/favicon.ico");
 
 /// What is left of a day of reports after thirty days: the worst outcome of each check, without times or details.
 #[derive(Serialize, Deserialize)]
-struct Summary {
-    date: Date,
-    hostname: String,
-    checks: BTreeMap<String, Status>,
+pub struct Summary {
+    pub date: Date,
+    pub hostname: String,
+    pub checks: BTreeMap<String, Status>,
 }
 
 /// Stores the reports POSTed by the workstations, one directory per machine, and summarizes them after thirty days;
-/// besides them it serves only its favicon. It sits behind nginx, which alone can reach its socket.
-pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf) -> Result<(), String> {
+/// besides them it serves its favicon and, with a login, the pages of the reports. It sits behind nginx, which alone can
+/// reach its socket.
+pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf, login: Option<web::Login>) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -51,7 +53,7 @@ pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf) -> Result<(
         std::fs::set_permissions(&listen, std::fs::Permissions::from_mode(0o666))
             .map_err(|e| format!("{socket}: {e}"))?;
         tokio::spawn(summarize_expired_daily(reports.clone()));
-        let app = Router::new()
+        let mut app = Router::new()
             .route("/reports", post(store))
             .route(
                 "/favicon.ico",
@@ -66,7 +68,10 @@ pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf) -> Result<(
                 }),
             )
             .layer(DefaultBodyLimit::max(16 * 1024))
-            .with_state((reports, machines));
+            .with_state((reports.clone(), machines.clone()));
+        if let Some(login) = login {
+            app = app.merge(web::pages(reports, machines, login)?);
+        }
         axum::serve(listener, app)
             .with_graceful_shutdown(async {
                 match signal(SignalKind::terminate()) {

@@ -1,11 +1,12 @@
 [package]
 name = "optionfactory-posture"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "query", "tokio"] }
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
 ring = "0.17"
 jiff = { version = "0.2.35", features = ["serde"] }

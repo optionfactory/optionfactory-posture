@@ -41,8 +41,8 @@ admin compares the hash with the one the machine prints (`optionfactory-posture 
 Whoever takes a token can write reports under that machine's name, as whoever has root on it already can; taking the
 line off the list revokes it.
 The collector listens only on a Unix socket behind nginx (on the instance, mounted into the nginx container alone) and
-runs as an unprivileged user without network access. It answers `POST /reports` and `GET /favicon.ico`, a fixed file
-built into the binary; nothing else.
+runs as an unprivileged user. It answers `POST /reports` and `GET /favicon.ico`, a fixed file built into the binary,
+and, when given a Google login, the pages of the reports (see below); nothing else.
 
 Within that scope:
 
@@ -57,6 +57,26 @@ Within that scope:
 - **No addresses**: the source address of a report is often an employee's home. Neither nginx nor the collector logs
   it: only refused reports are logged, with the machine's name, and a pending machine once, with its hostname. Each stored file keeps the time of
   the report as its modification time, not the time it arrived, which would tell when the machine was online.
+
+### The pages of the reports
+
+Optional: without `--oidc-client-id` the collector serves no pages and opens no connection. With it, the reports are
+readable in a browser by the emails on the list of admins (`--admins`), and the collector connects to Google to sign
+them in:
+
+- **Google signs in, the list decides**: the authorization code flow with PKCE and a state bound to a short cookie. The
+  code goes back to Google over HTTPS, checked against the public roots built into the binary, and the ID token it
+  returns is checked for issuer, audience, expiry and a verified email. The email must be on the list, read again at
+  every request, so taking someone off the list closes their session at once.
+- **Sessions**: a cookie with the email and the expiry (12 hours), signed with a key made at start and kept only in
+  memory: a restart signs everyone out. `HttpOnly`, `Secure`, `SameSite=Lax`.
+- **Read-only**: the pages only read the reports and the list of machines; nothing in them changes either, approves a
+  machine or reaches a workstation.
+- **Everything from a report is text**: hostnames, details and every other field are escaped, and the pages carry a
+  Content-Security-Policy without scripts, so a report or a pending machine with markup in it cannot run anything in
+  the admin's browser.
+- **The secret**: the client secret comes only from the environment (`POSTURE_OIDC_CLIENT_SECRET`), never from the
+  arguments, which other users of the machine can read.
 
 ### Retention
 
@@ -74,4 +94,5 @@ connection and writes nothing. Every report is parsed as data; one that cannot b
 
 A single static binary (musl), released on GitHub with `SHA256SUMS`, and packaged in the signed APT repository
 [linux-packages](https://github.com/optionfactory/linux-packages). The dependencies are few: `ureq` with rustls for
-sending, `ring` for the hash of the tokens, `axum` and `tokio` for the collector, `serde`, `jiff` and `clap`.
+sending and for the login, `ring` for the hashes and the signed sessions, `axum` and `tokio` for the collector, `serde`,
+`base64`, `jiff` and `clap`.

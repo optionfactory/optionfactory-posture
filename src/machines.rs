@@ -147,10 +147,14 @@ pub fn record_pending(reports: &Path, token_sha256: &str, hostname: &str, machin
 
 /// The pending machines, with the hash of their token and when they were last heard from, oldest first. Approved ones
 /// and those silent for a month are removed.
-pub fn pending(reports: &Path, machines: &[Machine]) -> Vec<(String, Pending, Timestamp)> {
-    let mut found: Vec<_> = std::fs::read_dir(pending_dir(reports))
-        .into_iter()
-        .flatten()
+pub fn pending(reports: &Path, machines: &[Machine]) -> Result<Vec<(String, Pending, Timestamp)>, String> {
+    let dir = pending_dir(reports);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    let mut found: Vec<_> = entries
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
@@ -167,20 +171,20 @@ pub fn pending(reports: &Path, machines: &[Machine]) -> Vec<(String, Pending, Ti
         })
         .collect();
     found.sort_by_key(|(_, pending, _)| pending.first_seen);
-    found
+    Ok(found)
 }
 
-/// Prints the pending machines as entries for the list of machines, still without their owner.
-pub fn print_pending(reports: &Path, machines: &[Machine]) {
-    for (hash, pending, last_seen) in pending(reports, machines) {
+/// Prints the pending machines as lines of the list of machines, with a placeholder for their owner.
+pub fn print_pending(reports: &Path, machines: &[Machine]) -> Result<(), String> {
+    for (hash, pending, last_seen) in pending(reports, machines)? {
+        let name = pending.hostname.to_ascii_lowercase();
         println!(
-            "# machine-id {}, first seen {}, last seen {last_seen}",
+            "# {name}: machine-id {}, first seen {}, last seen {last_seen}",
             pending.machine_id, pending.first_seen
         );
-        println!("- name: {}", pending.hostname.to_ascii_lowercase());
-        println!("  owner: ");
-        println!("  posture_token_sha256: {hash}");
+        println!("{name} <owner> {hash}");
     }
+    Ok(())
 }
 
 #[cfg(test)]
