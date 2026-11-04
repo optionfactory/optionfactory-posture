@@ -72,6 +72,9 @@ enum Command {
         /// The emails allowed to read the pages, one per line, read again at every request.
         #[arg(long, env = "POSTURE_ADMINS")]
         admins: Option<PathBuf>,
+        /// Google Workspace domain of the admins: Google offers only its accounts, and only its ID tokens are accepted.
+        #[arg(long, env = "POSTURE_OIDC_DOMAIN")]
+        oidc_domain: Option<String>,
     },
     /// Prints this machine's name and the hash of its token, to compare with the pending machine before approving it.
     Id {
@@ -125,6 +128,7 @@ fn main() -> ExitCode {
             oidc_client_secret,
             public_url,
             admins,
+            oidc_domain,
         } => match (oidc_client_id, oidc_client_secret, public_url, admins) {
             (Some(client_id), Some(client_secret), Some(public_url), Some(admins)) => collect::collect(
                 listen,
@@ -135,6 +139,7 @@ fn main() -> ExitCode {
                     client_secret,
                     public_url,
                     admins,
+                    domain: oidc_domain,
                 }),
             ),
             (None, _, _, _) => collect::collect(listen, reports, machines, None),

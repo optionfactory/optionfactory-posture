@@ -28,6 +28,8 @@ pub struct Login {
     pub public_url: String,
     /// One email per line, read again at every request: taking someone off revokes their session.
     pub admins: PathBuf,
+    /// Google Workspace domain: Google offers only its accounts (`hd`), and only its ID tokens are accepted.
+    pub domain: Option<String>,
 }
 
 struct Web {
@@ -153,12 +155,15 @@ async fn sign_in(State(web): State<Arc<Web>>) -> Response {
         return message(StatusCode::INTERNAL_SERVER_ERROR, "No randomness for the login.");
     };
     let challenge = URL_SAFE_NO_PAD.encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()));
-    let url = format!(
+    let mut url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&scope=openid%20email&client_id={}\
          &redirect_uri={}&state={state}&code_challenge={challenge}&code_challenge_method=S256&prompt=select_account",
         url_encode(&web.login.client_id),
         url_encode(&redirect_uri(&web.login)),
     );
+    if let Some(domain) = &web.login.domain {
+        url.push_str(&format!("&hd={}", url_encode(domain)));
+    }
     (
         AppendHeaders([(
             header::SET_COOKIE,
@@ -255,6 +260,12 @@ fn google_email(login: &Login, code: &str, verifier: &str) -> Result<String, Str
     struct Tokens {
         id_token: String,
     }
+    let tokens: Tokens = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    id_token_email(login, &tokens.id_token)
+}
+
+/// The verified email of an ID token whose issuer, audience, expiry and domain are the expected ones.
+fn id_token_email(login: &Login, id_token: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Claims {
         iss: String,
@@ -263,9 +274,9 @@ fn google_email(login: &Login, code: &str, verifier: &str) -> Result<String, Str
         email: String,
         #[serde(default)]
         email_verified: bool,
+        hd: Option<String>,
     }
-    let tokens: Tokens = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-    let claims = tokens.id_token.split('.').nth(1).ok_or("ID token without claims")?;
+    let claims = id_token.split('.').nth(1).ok_or("ID token without claims")?;
     let claims = URL_SAFE_NO_PAD.decode(claims).map_err(|e| e.to_string())?;
     let claims: Claims = serde_json::from_slice(&claims).map_err(|e| e.to_string())?;
     if !matches!(
@@ -282,6 +293,11 @@ fn google_email(login: &Login, code: &str, verifier: &str) -> Result<String, Str
     }
     if !claims.email_verified {
         return Err(format!("{} is not verified", claims.email));
+    }
+    if let Some(domain) = &login.domain
+        && claims.hd.as_ref() != Some(domain)
+    {
+        return Err(format!("{} is not an account of {domain}", claims.email));
     }
     Ok(claims.email.to_ascii_lowercase())
 }
@@ -652,6 +668,7 @@ mod tests {
                 client_secret: String::new(),
                 public_url: String::new(),
                 admins: dir.join("admins"),
+                domain: None,
             },
             key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"test"),
         }
@@ -686,5 +703,35 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(!page.contains("<script>"));
+    }
+
+    #[test]
+    fn only_id_tokens_of_the_domain_sign_in() {
+        let login = Login {
+            client_id: "client".to_string(),
+            client_secret: String::new(),
+            public_url: String::new(),
+            admins: PathBuf::new(),
+            domain: Some("optionfactory.net".to_string()),
+        };
+        let id_token = |email: &str, hd: Option<&str>| {
+            let claims = serde_json::json!({
+                "iss": "https://accounts.google.com",
+                "aud": "client",
+                "exp": Timestamp::now().as_second() + 60,
+                "email": email,
+                "email_verified": true,
+                "hd": hd,
+            });
+            format!("header.{}.signature", URL_SAFE_NO_PAD.encode(claims.to_string()))
+        };
+
+        let emails = [
+            id_token("Mario.Rossi@optionfactory.net", Some("optionfactory.net")),
+            id_token("mario.rossi@gmail.com", None),
+            id_token("mario.rossi@guests.opfa.net", Some("guests.opfa.net")),
+        ]
+        .map(|token| id_token_email(&login, &token).ok());
+        assert_eq!(emails, [Some("mario.rossi@optionfactory.net".to_string()), None, None]);
     }
 }

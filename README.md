@@ -93,7 +93,7 @@ longer.
 
 ```bash
 POSTURE_OIDC_CLIENT_SECRET=... optionfactory-posture collect ... \
-    --oidc-client-id <id> --public-url https://<host> --admins <list of emails>
+    --oidc-client-id <id> --public-url https://<host> --admins <list of emails> [--oidc-domain <domain>]
 ```
 
 With a Google OAuth client (`--oidc-client-id`, `POSTURE_OIDC_CLIENT_ID`; the secret only from
@@ -104,7 +104,8 @@ With a Google OAuth client (`--oidc-client-id`, `POSTURE_OIDC_CLIENT_ID`; the se
 - `/machines/<name>`: the latest report in full, the reports of the last thirty days and the daily summaries.
 
 Only the emails in `--admins` (`POSTURE_ADMINS`, one per line, read again at every request) get in. Sessions last 12
-hours and end when the collector restarts. Without `--oidc-client-id` there are no pages and the collector opens no
+hours and end when the collector restarts. With `--oidc-domain` (`POSTURE_OIDC_DOMAIN`) Google offers only the
+accounts of that Google Workspace domain, and ID tokens of other domains are refused. Without `--oidc-client-id` there are no pages and the collector opens no
 connection.
 
 ## Review and pending

@@ -66,7 +66,7 @@ them in:
 
 - **Google signs in, the list decides**: the authorization code flow with PKCE and a state bound to a short cookie. The
   code goes back to Google over HTTPS, checked against the public roots built into the binary, and the ID token it
-  returns is checked for issuer, audience, expiry and a verified email. The email must be on the list, read again at
+  returns is checked for issuer, audience, expiry, a verified email and, with `--oidc-domain`, its `hd` claim. The email must be on the list, read again at
   every request, so taking someone off the list closes their session at once.
 - **Sessions**: a cookie with the email and the expiry (12 hours), signed with a key made at start and kept only in
   memory: a restart signs everyone out. `HttpOnly`, `Secure`, `SameSite=Lax`.
