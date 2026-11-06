@@ -23,7 +23,7 @@ const MOST_REPORTS: usize = 5_000;
 const REPORT_RETENTION: SignedDuration = SignedDuration::from_hours(30 * 24);
 /// Twelve months, the time between two audits.
 const SUMMARY_RETENTION: SignedDuration = SignedDuration::from_hours(365 * 24);
-/// The OptionFactory glyph in the colour of this service (tools/favicons in internal-infra).
+/// The OptionFactory glyph in the colour of this service.
 const FAVICON: &[u8] = include_bytes!("../branding/favicon.ico");
 
 /// What is left of a day of reports after thirty days: the worst outcome of each check, without times or details.
