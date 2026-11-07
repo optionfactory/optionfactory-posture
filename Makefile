@@ -14,7 +14,13 @@ test:
 clean:
 	-@rm -rf target/
 
-publish-github: build-release
+# the release is tagged on the commit GitHub has: only a clean tree, with master pushed
+pushed:
+	@git diff --quiet HEAD || { echo "uncommitted changes: commit them first"; exit 1; }
+	@git fetch -q origin master
+	@[ "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/master)" ] || { echo "master is not pushed: push it first"; exit 1; }
+
+publish-github: pushed build-release
 	$(eval VERSION=v$(shell cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version'))
 	@cp target/x86_64-unknown-linux-musl/release/$(REPO_NAME) target/$(REPO_NAME)-linux-amd64-musl
 	@cd target && sha256sum $(REPO_NAME)-linux-amd64-musl > SHA256SUMS
@@ -23,8 +29,8 @@ publish-github: build-release
 		"target/SHA256SUMS" \
 		--repo "$(REPO_OWNER)/$(REPO_NAME)" \
 		--title "$(VERSION)" \
-		--target "master" \
+		--target "$$(git rev-parse HEAD)" \
 		--notes ""
 	-@rm target/$(REPO_NAME)-linux-amd64-musl target/SHA256SUMS
 
-.PHONY: build build-release test clean publish-github
+.PHONY: build build-release test clean pushed publish-github
