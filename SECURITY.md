@@ -40,7 +40,8 @@ matters: an unknown token is recorded as pending under the hostname its report c
 admin compares the hash with the one the machine prints (`optionfactory-posture id`) before putting it on the list.
 Whoever takes a token can write reports under that machine's name, as whoever has root on it already can; taking the
 line off the list revokes it.
-The collector listens only on a Unix socket behind nginx (on the instance, mounted into the nginx container alone) and
+The collector listens behind nginx on an address not reachable from outside the server (on the instance, the host's
+address on the network of the containers: the other containers reach it too, nothing outside the instance does) and
 runs as an unprivileged user. It answers `POST /reports` and `GET /favicon.ico`, a fixed file built into the binary,
 and, when given a Google login, the pages of the reports (see below); nothing else.
 
@@ -60,13 +61,13 @@ Within that scope:
 
 ### The pages of the reports
 
-Optional: without `--oidc-client-id` the collector serves no pages and opens no connection. With it, the reports are
-readable in a browser by the emails on the list of admins (`--admins`), and the collector connects to Google to sign
+Optional: without a `[login]` section the collector serves no pages and opens no connection. With it, the reports are
+readable in a browser by the emails on the list of admins (`admins`), and the collector connects to Google to sign
 them in:
 
 - **Google signs in, the list decides**: the authorization code flow with PKCE and a state bound to a short cookie. The
   code goes back to Google over HTTPS, checked against the public roots built into the binary, and the ID token it
-  returns is checked for issuer, audience, expiry, a verified email and, with `--oidc-domain`, its `hd` claim. The email must be on the list, read again at
+  returns is checked for issuer, audience, expiry, a verified email and, with `domain`, its `hd` claim. The email must be on the list, read again at
   every request, so taking someone off the list closes their session at once.
 - **Sessions**: a cookie with the email and the expiry (12 hours), signed with a key made at start and kept only in
   memory: a restart signs everyone out. `HttpOnly`, `Secure`, `SameSite=Lax`.
@@ -75,7 +76,7 @@ them in:
 - **Everything from a report is text**: hostnames, details and every other field are escaped, and the pages carry a
   Content-Security-Policy without scripts, so a report or a pending machine with markup in it cannot run anything in
   the admin's browser.
-- **The secret**: the client secret comes only from the environment (`POSTURE_OIDC_CLIENT_SECRET`), never from the
+- **The secret**: the client secret is only in the settings file, readable by the collector and root, never in the
   arguments, which other users of the machine can read.
 
 ### Retention

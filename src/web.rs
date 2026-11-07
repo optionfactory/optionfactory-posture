@@ -1,9 +1,9 @@
-use crate::collect::Summary;
+use crate::collect::{Client, Summary};
 use crate::machines;
 use crate::report::{Report, Status};
 use crate::review;
 use axum::Router;
-use axum::extract::{Path as UrlPath, Query, State};
+use axum::extract::{Extension, Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{AppendHeaders, Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
@@ -21,6 +21,8 @@ const SESSION_COOKIE: &str = "posture_session";
 const LOGIN_COOKIE: &str = "posture_login";
 
 /// The Google OAuth client the pages sign in with, and who may read them.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Login {
     pub client_id: String,
     pub client_secret: String,
@@ -180,7 +182,12 @@ struct Callback {
     state: Option<String>,
 }
 
-async fn callback(State(web): State<Arc<Web>>, headers: HeaderMap, Query(query): Query<Callback>) -> Response {
+async fn callback(
+    State(web): State<Arc<Web>>,
+    Extension(Client(client)): Extension<Client>,
+    headers: HeaderMap,
+    Query(query): Query<Callback>,
+) -> Response {
     let Some((state, verifier)) = cookie(&headers, LOGIN_COOKIE).and_then(|value| value.split_once('.')) else {
         return message(StatusCode::BAD_REQUEST, "The login took too long: sign in again.");
     };
@@ -204,11 +211,11 @@ async fn callback(State(web): State<Arc<Web>>, headers: HeaderMap, Query(query):
     let email = match signed {
         Ok((true, email)) => email,
         Ok((false, email)) => {
-            eprintln!("optionfactory-posture: {email} signed in but is not on the list of admins");
+            eprintln!("optionfactory-posture: {email} signed in from {client} but is not on the list of admins");
             return message(StatusCode::FORBIDDEN, &format!("{email} may not read the reports."));
         }
         Err(e) => {
-            eprintln!("optionfactory-posture: login: {e}");
+            eprintln!("optionfactory-posture: login from {client}: {e}");
             return message(
                 StatusCode::BAD_GATEWAY,
                 "Google did not confirm the login: sign in again.",

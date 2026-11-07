@@ -3,15 +3,17 @@ use crate::report::{Report, Status};
 use crate::web;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum::routing::{get, post};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tokio::signal::unix::{SignalKind, signal};
@@ -35,23 +37,55 @@ pub struct Summary {
 }
 
 /// Stores the reports POSTed by the workstations, one directory per machine, and summarizes them after thirty days;
-/// besides them it serves its favicon and, with a login, the pages of the reports. It sits behind nginx, which alone can
-/// reach its socket.
-pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf, login: Option<web::Login>) -> Result<(), String> {
+/// besides them it serves its favicon and, with a login, the pages of the reports. It sits behind nginx.
+/// The file given to `collect --config`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settings {
+    /// For the reverse proxy, which alone should reach it.
+    #[serde(default = "Settings::listen")]
+    listen: SocketAddr,
+    /// The reverse proxy: only from it is the client address in `X-Forwarded-For` believed.
+    trusted_proxy: Option<IpAddr>,
+    /// One subdirectory of reports per machine.
+    #[serde(default = "Settings::reports")]
+    reports: PathBuf,
+    /// The machines allowed to send, read again at every report.
+    #[serde(default = "Settings::machines")]
+    machines: PathBuf,
+    /// Without it the collector serves no pages.
+    login: Option<web::Login>,
+}
+
+impl Settings {
+    fn listen() -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], 8090))
+    }
+    fn reports() -> PathBuf {
+        PathBuf::from("/var/lib/optionfactory-posture/reports")
+    }
+    fn machines() -> PathBuf {
+        PathBuf::from("/etc/optionfactory-posture/machines")
+    }
+}
+
+pub fn collect(config: &Path) -> Result<(), String> {
+    let settings = std::fs::read_to_string(config).map_err(|e| format!("{}: {e}", config.display()))?;
+    let Settings {
+        listen,
+        trusted_proxy: proxy,
+        reports,
+        machines,
+        login,
+    } = toml::from_str(&settings).map_err(|e| format!("{}: {e}", config.display()))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async move {
-        let socket = listen.display();
-        // the socket of the previous run stays behind and would make the bind fail
-        if std::fs::symlink_metadata(&listen).is_ok_and(|meta| meta.file_type().is_socket()) {
-            std::fs::remove_file(&listen).map_err(|e| format!("{socket}: {e}"))?;
-        }
-        let listener = tokio::net::UnixListener::bind(&listen).map_err(|e| format!("{socket}: {e}"))?;
-        // who may connect is decided by who can reach the directory
-        std::fs::set_permissions(&listen, std::fs::Permissions::from_mode(0o666))
-            .map_err(|e| format!("{socket}: {e}"))?;
+        let listener = tokio::net::TcpListener::bind(listen)
+            .await
+            .map_err(|e| format!("{listen}: {e}"))?;
         tokio::spawn(summarize_expired_daily(reports.clone()));
         let mut app = Router::new()
             .route("/reports", post(store))
@@ -72,7 +106,8 @@ pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf, login: Opti
         if let Some(login) = login {
             app = app.merge(web::pages(reports, machines, login)?);
         }
-        axum::serve(listener, app)
+        let app = app.layer(middleware::from_fn_with_state(proxy, client));
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async {
                 match signal(SignalKind::terminate()) {
                     Ok(mut terminate) => terminate.recv().await,
@@ -82,6 +117,32 @@ pub fn collect(listen: PathBuf, reports: PathBuf, machines: PathBuf, login: Opti
             .await
             .map_err(|e| e.to_string())
     })
+}
+
+/// Who made the request: the address the reverse proxy forwards (`X-Forwarded-For`, set by its `forwarded.conf`) when
+/// the request comes from it, the address of the connection otherwise. For the logs of the pages; the reports log none.
+#[derive(Clone, Copy)]
+pub struct Client(pub IpAddr);
+
+async fn client(
+    State(proxy): State<Option<IpAddr>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let forwarded = request.headers().get("X-Forwarded-For").and_then(|v| v.to_str().ok());
+    let address = forwarded_for(peer.ip(), forwarded, proxy);
+    request.extensions_mut().insert(Client(address));
+    next.run(request).await
+}
+
+/// The proxy appends the address it saw: the last one in the list, the others came with the request.
+fn forwarded_for(peer: IpAddr, forwarded: Option<&str>, proxy: Option<IpAddr>) -> IpAddr {
+    forwarded
+        .filter(|_| proxy == Some(peer))
+        .and_then(|list| list.rsplit(',').next())
+        .and_then(|last| last.trim().parse().ok())
+        .unwrap_or(peer)
 }
 
 async fn store(State((reports, machines)): State<(PathBuf, PathBuf)>, headers: HeaderMap, body: Bytes) -> StatusCode {
@@ -277,6 +338,32 @@ fn summarize_machine(dir: &Path, report_cutoff: &str, summary_cutoff: &str) -> s
 mod tests {
     use super::*;
     use crate::report::Check;
+
+    #[test]
+    fn the_settings_of_the_readme_are_read_and_a_misspelled_key_is_refused() {
+        let readme = include_str!("../README.md");
+        let example = readme
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .unwrap();
+        let settings: Settings = toml::from_str(example).unwrap();
+        assert_eq!(settings.trusted_proxy, Some("172.18.0.10".parse().unwrap()));
+        assert!(settings.login.is_some_and(|login| login.domain.is_some()));
+        assert!(toml::from_str::<Settings>("lsten = \"127.0.0.1:8090\"").is_err());
+    }
+
+    #[test]
+    fn the_forwarded_address_counts_only_when_the_proxy_sends_it() {
+        let proxy: IpAddr = "172.18.0.10".parse().unwrap();
+        let elsewhere: IpAddr = "172.18.0.13".parse().unwrap();
+        let client: IpAddr = "203.0.113.7".parse().unwrap();
+        assert_eq!(forwarded_for(proxy, Some("203.0.113.7"), Some(proxy)), client);
+        assert_eq!(forwarded_for(proxy, Some("10.0.0.1, 203.0.113.7"), Some(proxy)), client);
+        assert_eq!(forwarded_for(elsewhere, Some("203.0.113.7"), Some(proxy)), elsewhere);
+        assert_eq!(forwarded_for(proxy, Some("203.0.113.7"), None), proxy);
+        assert_eq!(forwarded_for(proxy, None, Some(proxy)), proxy);
+    }
 
     fn report(at: &str, firewall: Status) -> Vec<u8> {
         serde_json::to_vec(&Report {

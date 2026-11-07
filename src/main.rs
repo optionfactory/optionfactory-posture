@@ -39,42 +39,9 @@ enum Command {
     /// Stores the reports POSTed through nginx under the name of the machine whose token they carry, and summarizes them
     /// after thirty days.
     Collect {
-        /// Unix socket for nginx: whoever can reach its directory can write reports.
-        #[arg(
-            long,
-            env = "POSTURE_LISTEN",
-            default_value = "/run/optionfactory-posture/collect.sock"
-        )]
-        listen: PathBuf,
-        /// One subdirectory of reports per machine.
-        #[arg(
-            long,
-            env = "POSTURE_REPORTS",
-            default_value = "/var/lib/optionfactory-posture/reports"
-        )]
-        reports: PathBuf,
-        /// The machines allowed to send, read again at every report.
-        #[arg(
-            long,
-            env = "POSTURE_MACHINES",
-            default_value = "/etc/optionfactory-posture/machines"
-        )]
-        machines: PathBuf,
-        /// Google OAuth client of the pages of the reports; without it the collector serves no pages.
-        #[arg(long, env = "POSTURE_OIDC_CLIENT_ID", requires_all = ["public_url", "admins"])]
-        oidc_client_id: Option<String>,
-        /// From the environment only, so that it does not show among the arguments of the process.
-        #[arg(skip = std::env::var("POSTURE_OIDC_CLIENT_SECRET").ok())]
-        oidc_client_secret: Option<String>,
-        /// Where the pages are reached, `https://<host>`: Google sends the browser back to `<url>/oidc/callback`.
-        #[arg(long, env = "POSTURE_PUBLIC_URL")]
-        public_url: Option<String>,
-        /// The emails allowed to read the pages, one per line, read again at every request.
-        #[arg(long, env = "POSTURE_ADMINS")]
-        admins: Option<PathBuf>,
-        /// Google Workspace domain of the admins: Google offers only its accounts, and only its ID tokens are accepted.
-        #[arg(long, env = "POSTURE_OIDC_DOMAIN")]
-        oidc_domain: Option<String>,
+        /// TOML: `listen`, `trusted_proxy`, `reports`, `machines` and, for the pages, a `[login]` section (README.md).
+        #[arg(long, default_value = "/etc/optionfactory-posture/collect.conf")]
+        config: PathBuf,
     },
     /// Prints this machine's name and the hash of its token, to compare with the pending machine before approving it.
     Id {
@@ -120,31 +87,7 @@ fn main() -> ExitCode {
                     .map_err(|e| e.to_string()),
             }
         }
-        Command::Collect {
-            listen,
-            reports,
-            machines,
-            oidc_client_id,
-            oidc_client_secret,
-            public_url,
-            admins,
-            oidc_domain,
-        } => match (oidc_client_id, oidc_client_secret, public_url, admins) {
-            (Some(client_id), Some(client_secret), Some(public_url), Some(admins)) => collect::collect(
-                listen,
-                reports,
-                machines,
-                Some(web::Login {
-                    client_id,
-                    client_secret,
-                    public_url,
-                    admins,
-                    domain: oidc_domain,
-                }),
-            ),
-            (None, _, _, _) => collect::collect(listen, reports, machines, None),
-            _ => Err("--oidc-client-id needs POSTURE_OIDC_CLIENT_SECRET, --public-url and --admins".to_string()),
-        },
+        Command::Collect { config } => collect::collect(&config),
         Command::Review { reports, machines } => {
             machines::read(&machines).and_then(|machines| review::review(&reports, &machines))
         }

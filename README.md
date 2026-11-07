@@ -53,8 +53,8 @@ The report describes the machine, never the person using it: no files, sites, ap
 
 ## Machines
 
-The collector and the review read the same list of machines: `--machines` (`POSTURE_MACHINES`, default
-`/etc/optionfactory-posture/machines`), one `<name> <owner> <sha256 of the token>` per line, read again at every
+The collector and the review read the same list of machines (`machines` in the settings of the collector, `--machines`
+or `POSTURE_MACHINES` for the review; default `/etc/optionfactory-posture/machines`), one `<name> <owner> <sha256 of the token>` per line, read again at every
 report. The name becomes the directory of the reports of the machine: `[a-z0-9-]` only.
 
 At its first run the agent creates its token, random and readable only by root, in `<state>/token`. The collector
@@ -67,13 +67,29 @@ machines wait at a time, and one silent for a month is forgotten.
 ## Collect
 
 ```bash
-optionfactory-posture collect --listen <socket> --reports <directory> --machines <list>
+optionfactory-posture collect [--config /etc/optionfactory-posture/collect.conf]
 ```
 
-`--listen` (default `/run/optionfactory-posture/collect.sock`) and `--reports` (default
-`/var/lib/optionfactory-posture/reports`) also come from `POSTURE_LISTEN` and `POSTURE_REPORTS`. The collector sits
-behind a reverse proxy on a Unix socket, in a directory only the proxy can reach. It answers `POST /reports` and
-`GET /favicon.ico`, and the pages below when given a login.
+The settings are in a TOML file (mode `0640`, readable by the user of the collector: it holds the secret of the
+login); every key is optional except those of `[login]`, and an unknown key stops the collector at start:
+
+```toml
+listen = "127.0.0.1:8090"                        # for the reverse proxy, which alone should reach it
+trusted_proxy = "172.18.0.10"                    # the proxy: only from it is X-Forwarded-For believed
+reports = "/var/lib/optionfactory-posture/reports"
+machines = "/etc/optionfactory-posture/machines"
+
+[login]                                          # without it, no pages (see Pages)
+client_id = "<google oauth client>"
+client_secret = "<its secret>"
+public_url = "https://<host>"
+admins = "/etc/optionfactory-posture/admins"
+domain = "<google workspace domain>"             # optional
+```
+
+The collector sits behind a reverse proxy, on an address that only the proxy should reach. With `trusted_proxy`, the
+logs of the pages name the client from `X-Forwarded-For` when the proxy sends it; the reports log no address. It
+answers `POST /reports` and `GET /favicon.ico`, and the pages below when given a login.
 
 A report is stored only when it carries the token of a machine on the list (`Authorization: Bearer`), the body (at
 most 16 KiB) is a report and it is not more than an hour ahead. It goes to
@@ -91,22 +107,16 @@ longer.
 
 ## Pages
 
-```bash
-POSTURE_OIDC_CLIENT_SECRET=... optionfactory-posture collect ... \
-    --oidc-client-id <id> --public-url https://<host> --admins <list of emails> [--oidc-domain <domain>]
-```
-
-With a Google OAuth client (`--oidc-client-id`, `POSTURE_OIDC_CLIENT_ID`; the secret only from
-`POSTURE_OIDC_CLIENT_SECRET`) whose redirect URIs include `<public url>/oidc/callback`, the collector also serves:
+With a `[login]` section, a Google OAuth client whose redirect URIs include `<public_url>/oidc/callback`, the collector
+also serves:
 
 - `/`: every machine of the list with its owner, the time of its latest report, the outcome of each check and what the
   review would report, then the pending machines with the full hash of their token;
 - `/machines/<name>`: the latest report in full, the reports of the last thirty days and the daily summaries.
 
-Only the emails in `--admins` (`POSTURE_ADMINS`, one per line, read again at every request) get in. Sessions last 12
-hours and end when the collector restarts. With `--oidc-domain` (`POSTURE_OIDC_DOMAIN`) Google offers only the
-accounts of that Google Workspace domain, and ID tokens of other domains are refused. Without `--oidc-client-id` there are no pages and the collector opens no
-connection.
+Only the emails in `admins` (one per line, read again at every request) get in. Sessions last 12 hours and end when the
+collector restarts. With `domain` Google offers only the accounts of that Google Workspace domain, and ID tokens of
+other domains are refused. Without `[login]` there are no pages and the collector opens no connection.
 
 ## Review and pending
 
