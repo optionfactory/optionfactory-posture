@@ -1,7 +1,6 @@
-use crate::collect::{Client, Summary};
-use crate::machines;
-use crate::report::{Report, Status};
-use crate::review;
+mod pages;
+
+use crate::collect::Client;
 use axum::Router;
 use axum::extract::{Extension, Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -11,7 +10,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +17,7 @@ use std::time::Duration;
 const SESSION: SignedDuration = SignedDuration::from_hours(12);
 const SESSION_COOKIE: &str = "posture_session";
 const LOGIN_COOKIE: &str = "posture_login";
+const STYLE: &str = include_str!("web/posture.css");
 
 /// The Google OAuth client the pages sign in with, and who may read them.
 #[derive(Deserialize)]
@@ -55,6 +54,22 @@ pub fn pages(reports: PathBuf, machines: PathBuf, login: Login) -> Result<Router
     Ok(Router::new()
         .route("/", get(overview))
         .route("/machines/{name}", get(machine))
+        .route("/people", get(people))
+        .route("/people/{owner}", get(person))
+        .route("/types", get(kinds))
+        .route("/types/{kind}", get(kind))
+        .route(
+            "/posture.css",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                        (header::CACHE_CONTROL, "max-age=3600"),
+                    ],
+                    STYLE,
+                )
+            }),
+        )
         .route("/login", get(sign_in))
         .route("/oidc/callback", get(callback))
         .route("/logout", get(sign_out))
@@ -62,16 +77,43 @@ pub fn pages(reports: PathBuf, machines: PathBuf, login: Login) -> Result<Router
 }
 
 async fn overview(State(web): State<Arc<Web>>, headers: HeaderMap) -> Response {
-    signed_in_page(web, headers, render_overview).await
+    signed_in_page(web, headers, "", pages::render_overview).await
 }
 
 async fn machine(State(web): State<Arc<Web>>, headers: HeaderMap, UrlPath(name): UrlPath<String>) -> Response {
-    signed_in_page(web, headers, move |web, email| render_machine(web, email, &name)).await
+    signed_in_page(web, headers, "Not on the list of machines.", move |web, email| {
+        pages::render_machine(web, email, &name)
+    })
+    .await
 }
 
+async fn people(State(web): State<Arc<Web>>, headers: HeaderMap) -> Response {
+    signed_in_page(web, headers, "", pages::render_people).await
+}
+
+async fn person(State(web): State<Arc<Web>>, headers: HeaderMap, UrlPath(owner): UrlPath<String>) -> Response {
+    signed_in_page(web, headers, "Owns no machine on the list.", move |web, email| {
+        pages::render_person(web, email, &owner)
+    })
+    .await
+}
+
+async fn kinds(State(web): State<Arc<Web>>, headers: HeaderMap) -> Response {
+    signed_in_page(web, headers, "", pages::render_types).await
+}
+
+async fn kind(State(web): State<Arc<Web>>, headers: HeaderMap, UrlPath(kind): UrlPath<String>) -> Response {
+    signed_in_page(web, headers, "No such type of machine.", move |web, email| {
+        pages::render_kind(web, email, &kind)
+    })
+    .await
+}
+
+/// `missing` is the message when the page has nothing to show, for a name not on the list.
 async fn signed_in_page(
     web: Arc<Web>,
     headers: HeaderMap,
+    missing: &'static str,
     render: impl FnOnce(&Web, &str) -> Result<Option<String>, String> + Send + 'static,
 ) -> Response {
     let session = cookie(&headers, SESSION_COOKIE).map(str::to_string);
@@ -84,7 +126,7 @@ async fn signed_in_page(
     .await;
     match rendered {
         Ok(Ok(Some(Ok(page)))) => html(StatusCode::OK, page),
-        Ok(Ok(Some(Err(())))) => message(StatusCode::NOT_FOUND, "Not on the list of machines."),
+        Ok(Ok(Some(Err(())))) => message(StatusCode::NOT_FOUND, missing),
         Ok(Ok(None)) => Redirect::to("/login").into_response(),
         Ok(Err(e)) => {
             eprintln!("optionfactory-posture: {e}");
@@ -320,248 +362,6 @@ async fn sign_out() -> Response {
         .into_response()
 }
 
-fn render_overview(web: &Web, email: &str) -> Result<Option<String>, String> {
-    let machines = machines::read(&web.machines)?;
-    let pending = machines::pending(&web.reports, &machines)?;
-    let now = Timestamp::now();
-    let mut rows = Vec::new();
-    // one machine at a time: only its latest report is kept
-    for machine in &machines {
-        let (reports, findings) = review::reviewed(&web.reports, machine, now);
-        rows.push((machine, reports.into_iter().next(), findings));
-    }
-    // the ones needing attention first
-    rows.sort_by_key(|(machine, _, findings)| (findings.is_empty(), machine.name.clone()));
-
-    let attention = rows.iter().filter(|(_, _, findings)| !findings.is_empty()).count();
-    let mut body = String::from("<h1>Workstations</h1><p class=\"counts\">");
-    let _ = write!(
-        body,
-        "<span>{} approved</span><span class=\"{}\">{attention} needing attention</span><span>{} waiting for \
-         approval</span></p>",
-        machines.len(),
-        if attention > 0 { "fail" } else { "pass" },
-        pending.len()
-    );
-    body.push_str(
-        "<div class=\"scroll\"><table class=\"machines stack\"><thead><tr><th>Machine</th><th>Last report</th>\
-         <th>State</th></tr></thead><tbody>",
-    );
-    for (machine, latest, findings) in &rows {
-        let _ = write!(
-            body,
-            "<tr><td><a href=\"/machines/{name}\">{name}</a><div class=\"owner\">{}</div></td><td class=\"time\">{}</td><td>",
-            escape(&machine.owner),
-            latest
-                .as_ref()
-                .map(|latest| ago(latest.taken_at, now))
-                .unwrap_or_else(|| "never".to_string()),
-            name = escape(&machine.name),
-        );
-        if let Some(latest) = latest {
-            body.push_str(&not_passing(
-                latest.checks.iter().map(|check| (&check.name, check.status)),
-            ));
-        }
-        if !findings.is_empty() {
-            body.push_str("<ul class=\"attention\">");
-            for finding in findings {
-                let _ = write!(body, "<li>{}</li>", escape(finding));
-            }
-            body.push_str("</ul>");
-        }
-        body.push_str("</td></tr>");
-    }
-    body.push_str("</tbody></table></div>");
-
-    body.push_str("<h2>Waiting for approval</h2>");
-    if pending.is_empty() {
-        body.push_str("<p>None.</p>");
-    } else {
-        body.push_str(
-            "<p>Before approving, the hash must match what <code>optionfactory-posture id</code> prints on the \
-             machine itself: anyone can send a report under any hostname.</p>\
-             <div class=\"scroll\"><table class=\"stack\"><thead><tr><th>Hostname</th><th>Machine id</th><th>First seen</th>\
-             <th>Last seen</th><th>Hash of the token</th></tr></thead><tbody>",
-        );
-        for (hash, machine, last_seen) in &pending {
-            let _ = write!(
-                body,
-                "<tr><td>{}</td><td><code>{}</code></td><td class=\"time\">{}</td><td class=\"time\">{}</td>\
-                 <td><code>{}</code></td></tr>",
-                escape(&machine.hostname),
-                escape(&machine.machine_id),
-                minutes(machine.first_seen),
-                minutes(*last_seen),
-                escape(hash)
-            );
-        }
-        body.push_str("</tbody></table></div>");
-    }
-    Ok(Some(page("Workstations", email, &body)))
-}
-
-fn render_machine(web: &Web, email: &str, name: &str) -> Result<Option<String>, String> {
-    let machines = machines::read(&web.machines)?;
-    let Some(machine) = machines.iter().find(|machine| machine.name == name) else {
-        return Ok(None);
-    };
-    let now = Timestamp::now();
-    let (reports, findings) = review::reviewed(&web.reports, machine, now);
-
-    let mut body = String::new();
-    let _ = write!(
-        body,
-        "<p class=\"back\"><a href=\"/\">All workstations</a></p><h1>{}</h1><p class=\"lead\">{}</p>",
-        escape(&machine.name),
-        escape(&machine.owner)
-    );
-    if findings.is_empty() {
-        body.push_str("<p>Nothing needs attention.</p>");
-    } else {
-        body.push_str("<ul class=\"attention\">");
-        for finding in &findings {
-            let _ = write!(body, "<li>{}</li>", escape(finding));
-        }
-        body.push_str("</ul>");
-    }
-
-    if let Some(latest) = reports.first() {
-        let _ = write!(
-            body,
-            "<h2>Latest report</h2><dl><dt>Taken</dt><dd>{} ({})</dd><dt>Hostname</dt><dd>{}</dd><dt>System</dt>\
-             <dd>{}</dd><dt>Kernel</dt><dd>{}</dd><dt>Agent</dt><dd>{}</dd></dl>",
-            minutes(latest.taken_at),
-            ago(latest.taken_at, now),
-            escape(&latest.hostname),
-            escape(&latest.os.pretty_name),
-            escape(&latest.kernel),
-            escape(&latest.agent)
-        );
-        body.push_str(
-            "<div class=\"scroll\"><table><thead><tr><th>Check</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>",
-        );
-        for check in &latest.checks {
-            let _ = write!(
-                body,
-                "<tr><td>{}</td><td><span class=\"chip {}\">{}</span></td><td class=\"detail\">{}</td></tr>",
-                escape(&check.name),
-                status_class(check.status),
-                status_class(check.status),
-                escape(&check.detail)
-            );
-        }
-        body.push_str("</tbody></table></div>");
-    }
-
-    body.push_str("<h2>Last thirty days</h2>");
-    if reports.is_empty() {
-        body.push_str("<p>No reports.</p>");
-    } else {
-        body.push_str(
-            "<div class=\"scroll\"><table><thead><tr><th>From</th><th>To</th><th>Reports</th><th>State</th></tr>\
-             </thead><tbody>",
-        );
-        // consecutive reports with the same outcomes make one row
-        let state = |report: &Report| not_passing(report.checks.iter().map(|check| (&check.name, check.status)));
-        let mut runs: Vec<(Timestamp, Timestamp, usize, String)> = Vec::new();
-        for report in &reports {
-            let current = state(report);
-            match runs.last_mut() {
-                Some((oldest, _, count, last)) if *last == current => {
-                    *oldest = report.taken_at;
-                    *count += 1;
-                }
-                _ => runs.push((report.taken_at, report.taken_at, 1, current)),
-            }
-        }
-        for (oldest, newest, count, state) in &runs {
-            let _ = write!(
-                body,
-                "<tr><td class=\"time\">{}</td><td class=\"time\">{}</td><td class=\"number\">{count}</td><td>{state}</td></tr>",
-                minutes(*oldest),
-                minutes(*newest)
-            );
-        }
-        body.push_str("</tbody></table></div>");
-    }
-
-    let mut summaries: Vec<Summary> = std::fs::read_dir(web.reports.join(&machine.name).join("daily"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-        .filter_map(|entry| serde_json::from_slice(&std::fs::read(entry.path()).ok()?).ok())
-        .collect();
-    summaries.sort_by_key(|summary| std::cmp::Reverse(summary.date));
-    body.push_str("<h2>Daily summaries</h2><p>Older than thirty days: the worst outcome of each check in the day.</p>");
-    if summaries.is_empty() {
-        body.push_str("<p>None yet.</p>");
-    } else {
-        body.push_str("<div class=\"scroll\"><table><thead><tr><th>Day</th><th>Not passing</th></tr></thead><tbody>");
-        for summary in &summaries {
-            let _ = write!(
-                body,
-                "<tr><td class=\"time\">{}</td><td>{}</td></tr>",
-                summary.date,
-                not_passing(summary.checks.iter().map(|(name, status)| (name, *status)))
-            );
-        }
-        body.push_str("</tbody></table></div>");
-    }
-    Ok(Some(page(&machine.name, email, &body)))
-}
-
-/// A time to the minute, in UTC.
-fn minutes(at: Timestamp) -> String {
-    at.strftime("%Y-%m-%d %H:%M").to_string()
-}
-
-fn not_passing<'a>(checks: impl Iterator<Item = (&'a String, Status)>) -> String {
-    let failing: Vec<String> = checks
-        .filter(|(_, status)| *status != Status::Pass)
-        .map(|(name, status)| format!("<span class=\"chip {}\">{}</span>", status_class(status), escape(name)))
-        .collect();
-    if failing.is_empty() {
-        "<span class=\"chip pass\">all pass</span>".to_string()
-    } else {
-        failing.join(" ")
-    }
-}
-
-fn status_class(status: Status) -> &'static str {
-    match status {
-        Status::Pass => "pass",
-        Status::Fail => "fail",
-        Status::Unknown => "unknown",
-    }
-}
-
-fn ago(then: Timestamp, now: Timestamp) -> String {
-    let minutes = now.duration_since(then).as_secs() / 60;
-    match minutes {
-        ..1 => "just now".to_string(),
-        1..60 => format!("{minutes} min ago"),
-        60..2880 => format!("{} h ago", minutes / 60),
-        _ => format!("{} days ago", minutes / 1440),
-    }
-}
-
-fn escape(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            c => escaped.push(c),
-        }
-    }
-    escaped
-}
-
 fn url_encode(text: &str) -> String {
     text.bytes()
         .map(|byte| match byte {
@@ -577,7 +377,7 @@ fn html(status: StatusCode, page: String) -> Response {
         [
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'",
+                "default-src 'none'; style-src 'self'; img-src 'self'; frame-ancestors 'none'",
             ),
             (header::CACHE_CONTROL, "no-store"),
             (header::REFERRER_POLICY, "no-referrer"),
@@ -588,76 +388,12 @@ fn html(status: StatusCode, page: String) -> Response {
 }
 
 fn message(status: StatusCode, text: &str) -> Response {
-    let body = format!("<p>{}</p><p><a href=\"/login\">Sign in</a></p>", escape(text));
-    html(status, page("Posture", "", &body))
+    let body = format!(
+        "<div class=\"message\"><p>{}</p><p><a href=\"/login\">Sign in</a></p></div>",
+        pages::escape(text)
+    );
+    html(status, pages::page("Sign in", "", &[], "", &body))
 }
-
-fn page(title: &str, email: &str, body: &str) -> String {
-    let account = if email.is_empty() {
-        String::new()
-    } else {
-        format!("<span>{} · <a href=\"/logout\">sign out</a></span>", escape(email))
-    };
-    format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{} · Posture</title>\
-         <link rel=\"icon\" href=\"/favicon.ico\"><style>{STYLE}</style></head><body><header><a href=\"/\">Posture</a>\
-         {account}</header><main>{body}<p class=\"lead\">Times are UTC.</p></main></body></html>",
-        escape(title)
-    )
-}
-
-const STYLE: &str = "
-:root { --bg: #f6f7f9; --fg: #1c2230; --muted: #5f6878; --line: #e1e4ea; --surface: #ffffff; --head: #f0f2f5;
-  --pass: #1d7348; --pass-bg: #e2f3e9; --fail: #a8222b; --fail-bg: #fbe5e6; --unknown: #855600; --unknown-bg: #faefd6;
-  --link: #2758ad; color-scheme: light }
-@media (prefers-color-scheme: dark) { :root { --bg: #13161c; --fg: #e3e6ed; --muted: #98a1b2; --line: #2a303a;
-  --surface: #1a1e26; --head: #20252e; --pass: #72d39f; --pass-bg: #16301f; --fail: #ff9097; --fail-bg: #3b1b1f;
-  --unknown: #f0c46e; --unknown-bg: #382c13; --link: #91b5ff; color-scheme: dark } }
-* { box-sizing: border-box }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif }
-header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap;
-  padding: 0.8rem max(1rem, calc((100% - 64rem) / 2)); border-bottom: 1px solid var(--line); background: var(--surface) }
-header > a { font-weight: 650; color: var(--fg); text-decoration: none; letter-spacing: 0.01em }
-header span { color: var(--muted); font-size: 0.9rem }
-main { padding: 1.5rem 1rem 3rem; max-width: 66rem; margin: 0 auto }
-a { color: var(--link); text-decoration: none } a:hover { text-decoration: underline }
-h1 { font-size: 1.6rem; margin: 0 0 0.5rem; text-wrap: balance }
-h2 { font-size: 1.1rem; margin: 2.25rem 0 0.6rem }
-p { max-width: 65ch }
-.lead, .back { color: var(--muted); margin-top: 0 }
-.counts { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1.25rem }
-.counts span { padding: 0.2rem 0.65rem; border-radius: 999px; background: var(--surface); border: 1px solid var(--line);
-  font-size: 0.85rem; color: var(--muted) }
-.counts span.fail { color: var(--fail); background: var(--fail-bg); border-color: transparent }
-.counts span.pass { color: var(--pass); background: var(--pass-bg); border-color: transparent }
-.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface) }
-table { border-collapse: collapse; width: 100% }
-th, td { padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top }
-th { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
-  background: var(--head); white-space: nowrap }
-tbody tr:last-child td { border-bottom: 0 }
-table.machines td:first-child { width: 16rem } table.machines td:nth-child(2) { width: 9rem }
-td.time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted) }
-td.number { text-align: right; font-variant-numeric: tabular-nums }
-td.detail { color: var(--muted); word-break: break-word; font-size: 0.9rem }
-.owner { color: var(--muted); font-size: 0.85rem }
-.chip { display: inline-block; margin: 0 0.25rem 0.25rem 0; padding: 0.05rem 0.5rem; border-radius: 4px;
-  font-size: 0.8rem; font-weight: 550; white-space: nowrap }
-.pass { color: var(--pass) } .chip.pass { background: var(--pass-bg) }
-.fail { color: var(--fail) } .chip.fail { background: var(--fail-bg) }
-.unknown { color: var(--unknown) } .chip.unknown { background: var(--unknown-bg) }
-ul.attention { margin: 0.35rem 0 0; padding-left: 1.1rem; color: var(--fail); font-size: 0.9rem }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1.25rem; margin: 0 0 1rem }
-dt { color: var(--muted) } dd { margin: 0; min-width: 0; overflow-wrap: anywhere }
-code { font-size: 0.85em; word-break: break-all }
-@media (max-width: 40rem) {
-  table.stack thead { display: none }
-  table.stack tr { display: block; padding: 0.6rem 0; border-bottom: 1px solid var(--line) }
-  table.stack tbody tr:last-child { border-bottom: 0 }
-  table.stack td { display: block; width: auto !important; border: 0; padding: 0.15rem 0.8rem }
-}
-";
 
 #[cfg(test)]
 mod tests {
@@ -666,7 +402,6 @@ mod tests {
     fn web(dir: &Path) -> Web {
         std::fs::create_dir_all(dir.join("reports")).unwrap();
         std::fs::write(dir.join("admins"), "# domain-admins\nmario.rossi@optionfactory.net\n").unwrap();
-        std::fs::write(dir.join("machines"), "").unwrap();
         Web {
             reports: dir.join("reports"),
             machines: dir.join("machines"),
@@ -698,18 +433,6 @@ mod tests {
             valid,
             [Some("mario.rossi@optionfactory.net".to_string()), None, None, None]
         );
-    }
-
-    #[test]
-    fn a_pending_hostname_is_text_not_markup() {
-        let dir = std::env::temp_dir().join(format!("optionfactory-posture-web-pending-{}", std::process::id()));
-        let web = web(&dir);
-        machines::record_pending(&web.reports, &"0".repeat(64), "<script>alert(1)</script>", "id").unwrap();
-
-        let page = render_overview(&web, "mario.rossi@optionfactory.net").unwrap().unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-        assert!(!page.contains("<script>"));
     }
 
     #[test]

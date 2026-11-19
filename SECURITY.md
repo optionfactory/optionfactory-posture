@@ -21,8 +21,8 @@ Within that scope it keeps its exposure small:
   `dconf read`, `docker ps`) are executed directly with fixed arguments, never through a shell, with `LC_ALL=C`.
 - **Nothing listens**: the agent opens no port and accepts no input from the network; it only sends. Nothing on the
   collector can command a machine.
-- **The machine, not the person**: a report holds the hostname, the machine id, the system, the kernel and the
-  outcome of each check. No files, sites, applications, sessions or VPN state; `docker-ports` reports only the
+- **The machine, not the person**: a report holds the hostname, the machine id, the system, the kernel, the
+  chassis type (laptop or desktop) and the outcome of each check. No files, sites, applications, sessions or VPN state; `docker-ports` reports only the
   published port mappings, not the containers. The time of each report does tell that the machine was on then (see
   Retention).
 - **Only to the collector**: reports wait in `/var/lib/optionfactory-posture/queue`, readable only by root, and go
@@ -74,8 +74,8 @@ them in:
 - **Read-only**: the pages only read the reports and the list of machines; nothing in them changes either, approves a
   machine or reaches a workstation.
 - **Everything from a report is text**: hostnames, details and every other field are escaped, and the pages carry a
-  Content-Security-Policy without scripts, so a report or a pending machine with markup in it cannot run anything in
-  the admin's browser.
+  Content-Security-Policy without scripts or inline styles (only the collector's own stylesheet), so a report or a
+  pending machine with markup in it cannot run anything in the admin's browser.
 - **The secret**: the client secret is only in the settings file, readable by the collector and root, never in the
   arguments, which other users of the machine can read.
 

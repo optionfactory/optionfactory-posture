@@ -12,6 +12,9 @@ pub struct Report {
     pub machine_id: String,
     pub os: checks::os::Os,
     pub kernel: String,
+    /// SMBIOS chassis type (`/sys/class/dmi/id/chassis_type`): the pages tell laptops from workstations by it.
+    #[serde(default)]
+    pub chassis_type: Option<u8>,
     pub checks: Vec<Check>,
 }
 
@@ -75,6 +78,7 @@ impl Report {
             machine_id: first_line("/etc/machine-id"),
             os,
             kernel: first_line("/proc/sys/kernel/osrelease"),
+            chassis_type: first_line("/sys/class/dmi/id/chassis_type").parse().ok(),
             checks: all,
         }
     }

@@ -145,6 +145,7 @@ mod tests {
             machine_id: String::new(),
             os: Default::default(),
             kernel: String::new(),
+            chassis_type: None,
             checks: vec![
                 Check::new("firewall", firewall, "inactive"),
                 Check::new("os", Status::Pass, "Debian 13"),

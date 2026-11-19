@@ -1,0 +1,551 @@
+/* Design tokens: elaine's slate palette, with a light variant */
+:root {
+    --bg: #0f172a;
+    --card-bg: #1e293b;
+    --border: #334155;
+    --text: #f8fafc;
+    --text-muted: #94a3b8;
+    --primary: #38bdf8;
+    --success: #34d399;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --neutral: #64748b;
+    --head: color-mix(in srgb, black 35%, var(--bg));
+    --shadow: rgb(0 0 0 / 30%);
+    color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg: #f1f5f9;
+        --card-bg: #ffffff;
+        --border: #cbd5e1;
+        --text: #0f172a;
+        --text-muted: #475569;
+        --primary: #0369a1;
+        --success: #047857;
+        --warning: #b45309;
+        --danger: #b91c1c;
+        --neutral: #64748b;
+        --head: #e2e8f0;
+        --shadow: rgb(15 23 42 / 12%);
+        color-scheme: light;
+    }
+}
+
+:root {
+    --surface-hover: color-mix(in srgb, var(--text) 4%, var(--card-bg));
+    --surface-selected: color-mix(in srgb, var(--primary) 12%, var(--card-bg));
+    --nav-pill-active: color-mix(in srgb, var(--primary) 12%, var(--bg));
+    --table-border: color-mix(in srgb, var(--border) 50%, var(--bg));
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) var(--bg);
+}
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+    min-height: 100vh;
+
+    &>main {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 1.25rem 1rem 2rem;
+    }
+}
+
+a {
+    color: var(--primary);
+    text-decoration: none;
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
+
+:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+code {
+    font-family: var(--mono);
+    font-size: 0.85em;
+    word-break: break-all;
+}
+
+/* Top bar: brand and page, views, account, sections of the page */
+header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 0.5rem;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+
+    h1 {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+        margin: 0.75rem 1rem;
+        font-size: 1.25rem;
+        font-weight: 700;
+        white-space: nowrap;
+
+        a {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        img {
+            width: 1em;
+            height: 1em;
+        }
+
+        .page {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-weight: 400;
+            color: var(--text-muted);
+        }
+    }
+
+    .views {
+        display: flex;
+        gap: 0.5rem;
+        margin: 0 1rem 0.75rem;
+
+        @media (min-width: 1024px) {
+            margin: 0.75rem 0 0.75rem auto;
+        }
+
+        a {
+            padding: 0.375rem 0.875rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-decoration: none;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+
+            &:hover {
+                color: var(--text);
+                background: var(--surface-hover);
+                box-shadow: 0 4px 12px var(--shadow);
+            }
+
+            &.active {
+                color: var(--text);
+                background: var(--surface-selected);
+                box-shadow: 0 4px 12px rgb(from var(--primary) r g b / 20%);
+            }
+        }
+    }
+
+    .account {
+        margin: 0 1rem 0.75rem auto;
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        white-space: nowrap;
+
+        @media (min-width: 1024px) {
+            margin: 0.75rem 1rem 0.75rem 0.5rem;
+        }
+    }
+
+    .sections {
+        display: flex;
+        flex-basis: 100%;
+        gap: 0.25rem;
+        overflow-x: auto;
+        padding: 0.5rem max(0.25rem, calc((100% - 1200px) / 2 + 0.25rem));
+        border-top: 1px solid var(--border);
+
+        a {
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            white-space: nowrap;
+
+            &:hover {
+                color: var(--primary);
+                background: var(--nav-pill-active);
+                text-decoration: none;
+            }
+        }
+    }
+}
+
+section {
+    scroll-margin-top: 7rem;
+
+    &+section {
+        margin-top: 2.5rem;
+    }
+
+    &>h2 {
+        margin: 0 0 0.5rem;
+        font-size: 0.9rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+    }
+}
+
+p.intro {
+    max-width: 90ch;
+    margin: 0 0 1rem;
+    padding: 0.75rem 1.25rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--primary);
+    border-radius: 0 6px 6px 0;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    line-height: 1.65;
+
+    code {
+        padding: 0.05rem 0.35rem;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--primary);
+    }
+
+    em {
+        color: var(--text);
+        font-style: normal;
+        font-weight: 500;
+    }
+}
+
+p.lead {
+    margin: 0 0 1rem;
+    color: var(--text-muted);
+}
+
+p.empty,
+p.note {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+p.note {
+    margin-top: 2.5rem;
+}
+
+/* Summary cards; only those that lead somewhere are links */
+.metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+
+    &>* {
+        display: block;
+        padding: 0.5rem 1rem;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-top: 4px solid var(--neutral);
+        border-radius: 8px;
+
+        span {
+            display: block;
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        strong {
+            font-size: 1.4rem;
+            color: var(--primary);
+            font-variant-numeric: tabular-nums;
+        }
+
+        &.pass {
+            border-top-color: var(--success);
+        }
+
+        &.fail {
+            border-top-color: var(--danger);
+
+            strong {
+                color: var(--danger);
+            }
+        }
+
+        &.wait {
+            border-top-color: var(--warning);
+
+            strong {
+                color: var(--warning);
+            }
+        }
+    }
+
+    &>a:hover {
+        text-decoration: none;
+        background: var(--surface-hover);
+        box-shadow: 0 4px 12px var(--shadow);
+    }
+}
+
+/* Verdict of a machine, under its name */
+.verdict {
+    margin-bottom: 2rem;
+    padding: 0.75rem 1.25rem;
+    border-radius: 6px;
+    font-weight: 600;
+
+    &.pass {
+        color: var(--success);
+        background: color-mix(in srgb, var(--success) 12%, var(--card-bg));
+    }
+
+    &.fail {
+        color: var(--danger);
+        background: color-mix(in srgb, var(--danger) 12%, var(--card-bg));
+    }
+}
+
+.facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+
+    dt {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+    }
+
+    dd {
+        font-size: 0.95rem;
+        font-weight: 500;
+        overflow-wrap: anywhere;
+    }
+}
+
+/* Tables: real tables on wide screens, one card per row on narrow ones */
+.table {
+    overflow-x: auto;
+    border: 1px solid var(--table-border);
+    border-radius: 6px;
+    background: var(--card-bg);
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 0.875rem;
+
+    th {
+        padding: 0.75rem 1rem;
+        background: var(--head);
+        color: var(--text-muted);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-weight: 600;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        text-align: left;
+        white-space: nowrap;
+        border-bottom: 2px solid var(--border);
+    }
+
+    td {
+        padding: 0.75rem 1rem;
+        vertical-align: top;
+        border-bottom: 1px solid var(--table-border);
+        overflow-wrap: anywhere;
+    }
+
+    tbody tr:last-child td {
+        border-bottom: 0;
+    }
+
+    tbody tr:hover td {
+        background: var(--surface-hover);
+    }
+
+    .number {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    td.time {
+        white-space: nowrap;
+        color: var(--text-muted);
+    }
+
+    td.detail {
+        color: var(--text-muted);
+    }
+
+    td a {
+        display: inline-block;
+        margin: 0 0.25rem 0.25rem 0;
+        padding: 0.15rem 0.4rem;
+        background: color-mix(in srgb, var(--primary) 15%, var(--card-bg));
+        color: var(--primary);
+        border-radius: 4px;
+        white-space: nowrap;
+        transition: background-color 0.2s ease, color 0.2s ease;
+
+        &:hover {
+            background: var(--primary);
+            color: var(--bg);
+            text-decoration: none;
+        }
+
+        &.danger {
+            background: color-mix(in srgb, var(--danger) 15%, var(--card-bg));
+            color: var(--danger);
+
+            &:hover {
+                background: var(--danger);
+                color: var(--bg);
+            }
+        }
+
+        &.owner {
+            display: block;
+            width: fit-content;
+            margin: 0.25rem 0 0;
+            padding: 0;
+            background: none;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+
+            &:hover {
+                background: none;
+                color: var(--primary);
+                text-decoration: underline;
+            }
+        }
+    }
+
+    @media (max-width: 1023px) {
+        thead {
+            display: none;
+        }
+
+        tr {
+            display: block;
+            padding: 0.5rem 0;
+            border-left: 4px solid var(--neutral);
+            border-bottom: 1px solid var(--table-border);
+
+            &.ok {
+                border-left-color: var(--success);
+            }
+
+            &.attention {
+                border-left-color: var(--danger);
+            }
+        }
+
+        tbody tr:last-child {
+            border-bottom: 0;
+        }
+
+        td {
+            display: block;
+            padding: 0.2rem 1rem;
+            border: 0;
+
+            &.number {
+                text-align: left;
+            }
+
+            &[data-label]::before {
+                content: attr(data-label);
+                display: block;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                font-size: 0.7rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: var(--text-muted);
+            }
+        }
+
+        tbody tr:hover td {
+            background: none;
+        }
+    }
+}
+
+.chip {
+    display: inline-block;
+    margin: 0 0.25rem 0.25rem 0;
+    padding: 0.1rem 0.5rem;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
+
+    &.pass {
+        color: var(--success);
+        background: color-mix(in srgb, var(--success) 15%, var(--card-bg));
+    }
+
+    &.fail {
+        color: var(--danger);
+        background: color-mix(in srgb, var(--danger) 15%, var(--card-bg));
+    }
+
+    &.unknown {
+        color: var(--warning);
+        background: color-mix(in srgb, var(--warning) 15%, var(--card-bg));
+    }
+}
+
+ul.attention {
+    margin: 0.35rem 0 0 1.1rem;
+    color: var(--danger);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 0.85rem;
+    font-weight: 400;
+}
+
+.message {
+    max-width: 40rem;
+    margin: 3rem auto 0;
+    padding: 1.5rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+
+    p+p {
+        margin-top: 0.75rem;
+    }
+}
