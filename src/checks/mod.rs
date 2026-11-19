@@ -1,5 +1,10 @@
+pub mod apparmor;
+pub mod auto_login;
+pub mod automatic_updates;
+pub mod clock_sync;
 pub mod disk;
 pub mod docker_ports;
+pub mod empty_passwords;
 pub mod firewall;
 pub mod journal;
 pub mod os;

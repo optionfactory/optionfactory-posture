@@ -28,11 +28,16 @@ Threat model, data protection and how to report a vulnerability: [SECURITY.md](S
 | `os` | Linux Mint 22.x, Ubuntu 24.04 or Debian 13 |
 | `reboot-pending` | no `/var/run/reboot-required`, or younger than 7 days |
 | `security-updates` | `apt-get -s dist-upgrade` installs nothing from a security suite (the detail names at most 10 packages) |
+| `automatic-updates` | `unattended-upgrades` is installed and `apt-config dump` turns on `APT::Periodic::Update-Package-Lists` and `APT::Periodic::Unattended-Upgrade` |
 | `firewall` | ufw active, incoming denied or rejected by default |
 | `docker-ports` | no container port published on every interface (`0.0.0.0`, `::`): Docker bypasses ufw there. Only the mappings are reported, not the containers |
 | `sshd` | `sshd -T`: no password or keyboard-interactive login, no root, a `TrustedUserCAKeys` |
+| `empty-passwords` | no account in `/etc/shadow` has an empty password (the detail tells how many, never the names) |
+| `apparmor` | AppArmor is enabled, with at least one profile in enforce mode |
 | `journal` | journald storage is persistent |
+| `clock-sync` | `timedatectl` says the clock is synchronized (`NTPSynchronized=yes`), by any NTP client |
 | `screen-lock` | the system dconf defaults enable the lock after at most 15 minutes, and lock both keys (Cinnamon or GNOME) |
+| `auto-login` | neither LightDM (`autologin-user`, `autologin-guest`), GDM (`AutomaticLoginEnable`, `TimedLoginEnable`) nor SDDM (`[Autologin] User`) logs anyone in by itself (the detail names the file, never the user) |
 
 A check that cannot run (missing command, not root) is `unknown` and counts as failing.
 
@@ -142,7 +147,7 @@ without `--machines` they read the default list, and fail if it is not there.
 `review` covers every machine of the list, with its owner, and each pending one with the first 8 digits of the hash of
 its token. A machine is reported when it never sent a report, when its newest report is older than 7 days (past thirty
 days, when only the daily summaries are left, the date of the latest summary is reported), or when a check has kept
-failing longer than its grace: 2 hours for `firewall`, 48 for `security-updates`, 4 for the rest. Every report is
+failing longer than its grace: 2 hours for `firewall`, 24 for `clock-sync`, 48 for `security-updates`, 4 for the rest. Every report is
 read, so any that cannot be read is reported, as is one stamped more than an hour ahead. Directories of machines no
 longer on the list are skipped.
 

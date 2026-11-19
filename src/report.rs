@@ -71,11 +71,16 @@ impl Report {
             ("os", os.check()),
             ("reboot-pending", checks::reboot::check()),
             ("security-updates", checks::updates::check()),
+            ("automatic-updates", checks::automatic_updates::check()),
             ("firewall", checks::firewall::check()),
             ("docker-ports", checks::docker_ports::check()),
             ("sshd", checks::sshd::check()),
+            ("empty-passwords", checks::empty_passwords::check()),
+            ("apparmor", checks::apparmor::check()),
             ("journal", checks::journal::check()),
+            ("clock-sync", checks::clock_sync::check()),
             ("screen-lock", checks::screen_lock::check()),
+            ("auto-login", checks::auto_login::check()),
         ] {
             all.push(Check::from_outcome(name, outcome));
         }
