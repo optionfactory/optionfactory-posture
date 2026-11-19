@@ -616,9 +616,10 @@ pub(super) fn render_machine(web: &Web, email: &str, name: &str) -> Result<Optio
     );
     match reports.first().map(|latest| &latest.listening) {
         None => body.push_str("<p class=\"empty\">No reports.</p>"),
-        Some(None) => {
-            body.push_str("<p class=\"empty\">The agent of the latest report does not send the listening ports.</p>")
-        }
+        Some(None) => body.push_str(
+            "<p class=\"empty\">Not in the latest report: an agent older than them, or one that could not read \
+                 <code>/proc/net/tcp</code>.</p>",
+        ),
         Some(Some(listening)) if listening.is_empty() => body.push_str("<p class=\"empty\">None.</p>"),
         Some(Some(listening)) => {
             body.push_str("<p>");

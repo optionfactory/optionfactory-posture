@@ -9,16 +9,21 @@ pub struct Listening {
     pub port: u16,
 }
 
-/// The listening TCP sockets of `/proc/net/tcp` and `/proc/net/tcp6`, without those on loopback.
-pub fn read() -> Vec<Listening> {
-    let mut all: Vec<Listening> = ["/proc/net/tcp", "/proc/net/tcp6"]
-        .into_iter()
-        .flat_map(|path| parse(&std::fs::read_to_string(path).unwrap_or_default()))
-        .filter(|listening| !listening.address.is_loopback())
-        .collect();
+/// The listening TCP sockets of `/proc/net/tcp` and `/proc/net/tcp6`, without those on loopback; `None` when they
+/// cannot be read, rather than an empty list that would say nothing listens. `tcp6` is missing only with IPv6 off.
+pub fn read() -> Option<Vec<Listening>> {
+    let mut all = Vec::new();
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        match std::fs::read_to_string(path) {
+            Ok(table) => all.extend(parse(&table)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && path.ends_with('6') => {}
+            Err(_) => return None,
+        }
+    }
+    all.retain(|listening: &Listening| !listening.address.is_loopback());
     all.sort();
     all.dedup();
-    all
+    Some(all)
 }
 
 /// One socket per line after the header: `sl local_address rem_address st ...`, the local address as `<ip>:<port>` in
