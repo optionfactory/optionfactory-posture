@@ -743,7 +743,9 @@ pub(super) fn page(title: &str, view: &str, sections: &[(&str, &str)], email: &s
         }
         let _ = write!(
             html,
-            "</nav><span class=\"account\">{} · <a href=\"/logout\">sign out</a></span>",
+            "</nav><a class=\"sign-out\" href=\"/logout\" title=\"Sign out {}\" aria-label=\"Sign out\">\
+             <svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4\"/>\
+             <path d=\"m16 17 5-5-5-5M21 12H9\"/></svg></a>",
             escape(email)
         );
     }
