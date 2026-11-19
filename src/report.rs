@@ -1,4 +1,5 @@
 mod hardware;
+mod listening;
 
 use crate::checks;
 use jiff::Timestamp;
@@ -19,6 +20,9 @@ pub struct Report {
     pub chassis_type: Option<u8>,
     #[serde(default)]
     pub hardware: hardware::Hardware,
+    /// `None` from an agent older than the field, to tell it apart from a machine with nothing listening.
+    #[serde(default)]
+    pub listening: Option<Vec<listening::Listening>>,
     pub checks: Vec<Check>,
 }
 
@@ -84,6 +88,7 @@ impl Report {
             kernel: first_line("/proc/sys/kernel/osrelease"),
             chassis_type: first_line("/sys/class/dmi/id/chassis_type").parse().ok(),
             hardware: hardware::Hardware::read(),
+            listening: Some(listening::read()),
             checks: all,
         }
     }

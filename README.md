@@ -54,7 +54,8 @@ Besides the checks it carries the hardware, without serial numbers: manufacturer
 firmware (`/sys/class/dmi/id`); CPU, threads and microcode, and what the kernel says of each known CPU flaw; memory; the
 graphics cards with their driver and memory (`amdgpu` in sysfs, `nvidia-smi` for `nvidia`); the network cards (not the
 virtual interfaces) with their driver, their own MAC address (`ip -json link` when Wi-Fi shows a random one) and whether
-they are wireless. Models are named from `pci.ids` and `usb.ids`.
+they are wireless. Models are named from `pci.ids` and `usb.ids`. It also lists the TCP ports listening on the network
+(`/proc/net/tcp` and `tcp6`, not those on loopback): the address and the port, never the process.
 
 ## Machines
 

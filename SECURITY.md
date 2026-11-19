@@ -23,7 +23,8 @@ Within that scope it keeps its exposure small:
   collector can command a machine.
 - **The machine, not the person**: a report holds the hostname, the machine id, the system, the kernel, the
   chassis type (laptop or desktop), the hardware (models, sizes, firmware and microcode versions, the CPU flaws the
-  kernel reports, the MAC addresses of the network cards; no serial numbers) and the outcome of each check. No files, sites, applications, sessions or VPN state; `docker-ports` reports only the
+  kernel reports, the MAC addresses of the network cards; no serial numbers), the TCP ports listening on the network (address and
+  port, never the process) and the outcome of each check. No files, sites, applications, sessions or VPN state; `docker-ports` reports only the
   published port mappings, not the containers. The time of each report does tell that the machine was on then (see
   Retention).
 - **Only to the collector**: reports wait in `/var/lib/optionfactory-posture/queue`, readable only by root, and go

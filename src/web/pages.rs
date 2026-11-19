@@ -609,6 +609,33 @@ pub(super) fn render_machine(web: &Web, email: &str, name: &str) -> Result<Optio
 
     section(
         &mut body,
+        "listening",
+        "Listening ports",
+        "The TCP ports open to the network on the machine itself in the latest report, without those on loopback: the \
+         firewall decides who reaches them. <code>0.0.0.0</code> and <code>::</code> are every address of the machine.",
+    );
+    match reports.first().map(|latest| &latest.listening) {
+        None => body.push_str("<p class=\"empty\">No reports.</p>"),
+        Some(None) => {
+            body.push_str("<p class=\"empty\">The agent of the latest report does not send the listening ports.</p>")
+        }
+        Some(Some(listening)) if listening.is_empty() => body.push_str("<p class=\"empty\">None.</p>"),
+        Some(Some(listening)) => {
+            body.push_str("<p>");
+            for socket in listening {
+                let _ = write!(
+                    body,
+                    "<span class=\"chip\">{}</span>",
+                    std::net::SocketAddr::new(socket.address, socket.port)
+                );
+            }
+            body.push_str("</p>");
+        }
+    }
+    body.push_str("</section>");
+
+    section(
+        &mut body,
         "history",
         "Last thirty days",
         "Consecutive reports with the same checks not passing make one row, newest first.",
@@ -680,6 +707,7 @@ pub(super) fn render_machine(web: &Web, email: &str, name: &str) -> Result<Optio
         &[
             ("latest", "Latest report"),
             ("hardware", "Hardware"),
+            ("listening", "Listening ports"),
             ("history", "Last thirty days"),
             ("daily", "Daily summaries"),
         ],
@@ -921,6 +949,7 @@ mod tests {
             kernel: String::new(),
             chassis_type,
             hardware: Default::default(),
+            listening: None,
             checks: vec![Check::new("firewall", firewall, "inactive")],
         };
         let dir = web.reports.join(machine);
