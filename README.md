@@ -39,7 +39,8 @@ Threat model, data protection and how to report a vulnerability: [SECURITY.md](S
 | `screen-lock` | the system dconf defaults enable the lock after at most 15 minutes, and lock both keys (Cinnamon or GNOME) |
 | `auto-login` | neither LightDM (`autologin-user`, `autologin-guest`), GDM (`AutomaticLoginEnable`, `TimedLoginEnable`) nor SDDM (`[Autologin] User`) logs anyone in by itself (the detail names the file, never the user) |
 
-A check that cannot run (missing command, not root) is `unknown` and counts as failing.
+A check that cannot run (missing command, not root, a command still running after a minute, then killed) is `unknown`
+and counts as failing.
 
 ## Report
 

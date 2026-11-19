@@ -13,18 +13,79 @@ pub mod screen_lock;
 pub mod sshd;
 pub mod updates;
 
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// A command still running after this is stuck (`nvidia-smi` with a GPU in a bad state, `docker ps` with a stuck
+/// daemon): killed, it leaves its check unknown instead of holding back the whole report.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Stdout of a command that must exit successfully; the error is meant for the `detail` of an unknown check.
 pub(crate) fn stdout_of(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
+    stdout_within(program, args, COMMAND_TIMEOUT)
+}
+
+fn stdout_within(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
+    let mut child = Command::new(program)
         .args(args)
         .env("LC_ALL", "C")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("{program} {}: {}", args.join(" "), stderr.trim()));
+    // read while it runs, or a full pipe would stop it
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("{program}: {e}"))? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                // the readers are left behind: a child of the command may still hold the pipes open
+                return Err(format!(
+                    "{program} {}: no answer in {} seconds",
+                    args.join(" "),
+                    timeout.as_secs()
+                ));
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    if !status.success() {
+        let stderr = stderr.join().unwrap_or_default();
+        return Err(format!(
+            "{program} {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&stderr).trim()
+        ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stuck_command_is_killed_and_its_check_left_unknown() {
+        let started = Instant::now();
+        let stuck = stdout_within("sleep", &["30"], Duration::from_millis(200));
+        assert_eq!(stuck, Err("sleep 30: no answer in 0 seconds".to_string()));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(stdout_within("echo", &["ok"], COMMAND_TIMEOUT), Ok("ok\n".to_string()));
+    }
 }
