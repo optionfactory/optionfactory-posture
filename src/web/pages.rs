@@ -860,7 +860,7 @@ fn ago(then: Timestamp, now: Timestamp) -> String {
     }
 }
 
-pub(super) fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for c in text.chars() {
         match c {

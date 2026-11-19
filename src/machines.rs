@@ -23,7 +23,7 @@ pub fn read(path: &Path) -> Result<Vec<Machine>, String> {
     parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn parse(text: &str) -> Result<Vec<Machine>, String> {
+pub(crate) fn parse(text: &str) -> Result<Vec<Machine>, String> {
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))

@@ -68,6 +68,12 @@ enum Command {
             default_value = "/etc/optionfactory-posture/machines"
         )]
         machines: PathBuf,
+        /// Prints an HTML mail body instead, or nothing when nothing needs attention.
+        #[arg(long)]
+        html: bool,
+        /// Public address of the pages, linked from the HTML.
+        #[arg(long, requires = "html")]
+        pages_url: Option<String>,
     },
 }
 
@@ -88,9 +94,13 @@ fn main() -> ExitCode {
             }
         }
         Command::Collect { config } => collect::collect(&config),
-        Command::Review { reports, machines } => {
-            machines::read(&machines).and_then(|machines| review::review(&reports, &machines))
-        }
+        Command::Review {
+            reports,
+            machines,
+            html,
+            pages_url,
+        } => machines::read(&machines)
+            .and_then(|machines| review::review(&reports, &machines, html, pages_url.as_deref())),
         Command::Id { state } => machines::id(&state),
         Command::Pending { reports, machines } => {
             machines::read(&machines).and_then(|machines| machines::print_pending(&reports, &machines))

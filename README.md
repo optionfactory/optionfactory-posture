@@ -139,6 +139,7 @@ other domains are refused. Without `[login]` there are no pages and the collecto
 
 ```bash
 optionfactory-posture review <reports> --machines <list>
+optionfactory-posture review <reports> --machines <list> --html [--pages-url https://<host>]
 optionfactory-posture pending <reports> --machines <list>
 ```
 
@@ -150,7 +151,9 @@ its token. A machine is reported when it never sent a report, when its newest re
 days, when only the daily summaries are left, the date of the latest summary is reported), or when a check has kept
 failing longer than its grace: 2 hours for `firewall`, 24 for `clock-sync`, 48 for `security-updates`, 4 for the rest. Every report is
 read, so any that cannot be read is reported, as is one stamped more than an hour ahead. Directories of machines no
-longer on the list are skipped.
+longer on the list are skipped. With `--html` it prints the same as the body of a mail (inline styles, the light
+palette of the pages), linking each machine to its page when given `--pages-url`, and prints nothing when nothing needs
+attention. What machines send (hostnames, details) is escaped.
 
 `pending` prints each pending machine as a line for the list of machines, `<name> <owner> <hash>`, with `<owner>` to
 fill in, after a comment with its machine id and when it was first and last heard from.

@@ -1,4 +1,4 @@
-mod pages;
+pub(crate) mod pages;
 
 use crate::collect::Client;
 use axum::Router;
