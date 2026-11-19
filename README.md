@@ -50,6 +50,11 @@ collector refuses with 401 (a machine not approved yet) or 5xx, and drops one re
 report, which would block the queue forever).
 
 The report describes the machine, never the person using it: no files, sites, applications, sessions or VPN state.
+Besides the checks it carries the hardware, without serial numbers: manufacturer, model, board and BIOS from the
+firmware (`/sys/class/dmi/id`); CPU, threads and microcode, and what the kernel says of each known CPU flaw; memory; the
+graphics cards with their driver and memory (`amdgpu` in sysfs, `nvidia-smi` for `nvidia`); the network cards (not the
+virtual interfaces) with their driver, their own MAC address (`ip -json link` when Wi-Fi shows a random one) and whether
+they are wireless. Models are named from `pci.ids` and `usb.ids`.
 
 ## Machines
 
@@ -116,7 +121,8 @@ also serves:
 - `/people` and `/people/<owner>`: the owners with their machines, and the machines of one owner;
 - `/types` and `/types/<laptop|workstation|unknown>`: the machines by type, from the SMBIOS chassis type of their latest
   report (`unknown`: no report, an agent that does not send it yet, or a chassis that is neither, such as a virtual machine);
-- `/machines/<name>`: the latest report in full, the reports of the last thirty days and the daily summaries.
+- `/machines/<name>`: the latest report in full with the hardware, the reports of the last thirty days and the daily
+  summaries.
 
 Only the emails in `admins` (one per line, read again at every request) get in. Sessions last 12 hours and end when the
 collector restarts. With `domain` Google offers only the accounts of that Google Workspace domain, and ID tokens of

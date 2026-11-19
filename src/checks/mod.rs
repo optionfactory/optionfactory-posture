@@ -11,7 +11,7 @@ pub mod updates;
 use std::process::Command;
 
 /// Stdout of a command that must exit successfully; the error is meant for the `detail` of an unknown check.
-fn stdout_of(program: &str, args: &[&str]) -> Result<String, String> {
+pub(crate) fn stdout_of(program: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(program)
         .args(args)
         .env("LC_ALL", "C")

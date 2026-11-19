@@ -594,6 +594,21 @@ pub(super) fn render_machine(web: &Web, email: &str, name: &str) -> Result<Optio
 
     section(
         &mut body,
+        "hardware",
+        "Hardware",
+        "What the latest report says the machine is made of, as the firmware, the kernel and the drivers describe it.",
+    );
+    match reports.first() {
+        None => body.push_str("<p class=\"empty\">No reports.</p>"),
+        Some(latest) if latest.hardware.cpu.is_empty() => {
+            body.push_str("<p class=\"empty\">The agent of the latest report does not send the hardware.</p>")
+        }
+        Some(latest) => hardware(&mut body, latest),
+    }
+    body.push_str("</section>");
+
+    section(
+        &mut body,
         "history",
         "Last thirty days",
         "Consecutive reports with the same checks not passing make one row, newest first.",
@@ -664,12 +679,121 @@ pub(super) fn render_machine(web: &Web, email: &str, name: &str) -> Result<Optio
         "/",
         &[
             ("latest", "Latest report"),
+            ("hardware", "Hardware"),
             ("history", "Last thirty days"),
             ("daily", "Daily summaries"),
         ],
         email,
         &body,
     )))
+}
+
+fn hardware(body: &mut String, latest: &Report) {
+    let hardware = &latest.hardware;
+    let gib = |kib: u64| format!("{:.1} GiB", kib as f64 / (1024.0 * 1024.0));
+    let model = [hardware.product.as_str(), hardware.product_version.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let bios = [hardware.bios_version.as_str(), hardware.bios_date.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cpu = format!("{}, {} threads", hardware.cpu, hardware.cpu_threads);
+    body.push_str("<dl class=\"facts\">");
+    for (label, value) in [
+        ("Manufacturer", hardware.vendor.as_str()),
+        ("Model", &model),
+        ("Board", &hardware.board),
+        ("BIOS", &bios),
+        ("CPU", &cpu),
+        ("Microcode", &hardware.microcode),
+        ("Memory", &gib(hardware.memory_kib)),
+    ] {
+        if !value.is_empty() {
+            let _ = write!(body, "<div><dt>{label}</dt><dd>{}</dd></div>", escape(value));
+        }
+    }
+    body.push_str("</dl>");
+
+    body.push_str("<h3>Graphics</h3>");
+    if hardware.gpus.is_empty() {
+        body.push_str("<p class=\"empty\">None.</p>");
+    } else {
+        body.push_str(
+            "<div class=\"table\"><table><thead><tr><th>Model</th><th>Driver</th><th class=\"number\">Memory</th></tr>\
+             </thead><tbody>",
+        );
+        for gpu in &hardware.gpus {
+            let _ = write!(
+                body,
+                "<tr><td>{}</td><td data-label=\"Driver\">{}</td><td class=\"number\" data-label=\"Memory\">{}</td></tr>",
+                escape(&gpu.name),
+                escape(&gpu.driver),
+                gpu.memory_mib
+                    .map(|mib| gib(mib * 1024))
+                    .unwrap_or_else(|| "shared or not told".to_string()),
+            );
+        }
+        body.push_str("</tbody></table></div>");
+    }
+
+    body.push_str("<h3>Network cards</h3>");
+    if hardware.nics.is_empty() {
+        body.push_str("<p class=\"empty\">None.</p>");
+    } else {
+        body.push_str(
+            "<div class=\"table\"><table><thead><tr><th>Interface</th><th>Model</th><th>Driver</th><th>MAC address</th>\
+             <th>Link</th></tr></thead><tbody>",
+        );
+        for nic in &hardware.nics {
+            let _ = write!(
+                body,
+                "<tr><td>{}</td><td data-label=\"Model\">{}</td><td data-label=\"Driver\">{}</td>\
+                 <td data-label=\"MAC address\">{}</td><td data-label=\"Link\">{}</td></tr>",
+                escape(&nic.interface),
+                escape(&nic.name),
+                escape(&nic.driver),
+                escape(&nic.mac),
+                if nic.wireless { "wireless" } else { "wired" },
+            );
+        }
+        body.push_str("</tbody></table></div>");
+    }
+
+    let mut flaws: Vec<(&String, &String)> = hardware
+        .cpu_vulnerabilities
+        .iter()
+        .filter(|(_, state)| state.as_str() != "Not affected")
+        .collect();
+    flaws.sort_by_key(|(_, state)| !state.starts_with("Vulnerable"));
+    let _ = write!(
+        body,
+        "<h3>CPU flaws</h3><p class=\"empty\">{} of the {} flaws the kernel knows do not affect this CPU.</p>",
+        hardware.cpu_vulnerabilities.len() - flaws.len(),
+        hardware.cpu_vulnerabilities.len(),
+    );
+    if !flaws.is_empty() {
+        body.push_str(
+            "<div class=\"table\"><table><thead><tr><th>Flaw</th><th>State</th><th>Detail</th></tr></thead><tbody>",
+        );
+        for (name, state) in flaws {
+            let vulnerable = state.starts_with("Vulnerable");
+            let _ = write!(
+                body,
+                "<tr class=\"{}\"><td>{}</td><td data-label=\"State\"><span class=\"chip {}\">{}</span></td>\
+                 <td class=\"detail\" data-label=\"Detail\">{}</td></tr>",
+                if vulnerable { "attention" } else { "ok" },
+                escape(name),
+                if vulnerable { "fail" } else { "pass" },
+                if vulnerable { "vulnerable" } else { "mitigated" },
+                escape(state),
+            );
+        }
+        body.push_str("</tbody></table></div>");
+    }
 }
 
 /// A time to the minute, in UTC.
@@ -796,6 +920,7 @@ mod tests {
             os: Default::default(),
             kernel: String::new(),
             chassis_type,
+            hardware: Default::default(),
             checks: vec![Check::new("firewall", firewall, "inactive")],
         };
         let dir = web.reports.join(machine);

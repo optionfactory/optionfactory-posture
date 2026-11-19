@@ -374,6 +374,7 @@ mod tests {
             os: Default::default(),
             kernel: String::new(),
             chassis_type: None,
+            hardware: Default::default(),
             checks: vec![Check::new("firewall", firewall, "inactive")],
         })
         .unwrap()

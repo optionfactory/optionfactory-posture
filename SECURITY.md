@@ -18,11 +18,12 @@ Within that scope it keeps its exposure small:
 
 - **Read-only**: it reads the state of the machine and changes nothing. The commands it runs (`lsblk`,
   `cryptsetup luksDump`, `clevis luks list`, `apt-get -s`, `ufw status`, `sshd -T`, `systemd-analyze cat-config`,
-  `dconf read`, `docker ps`) are executed directly with fixed arguments, never through a shell, with `LC_ALL=C`.
+  `dconf read`, `docker ps`, `ip -json link`, `nvidia-smi` when there is an NVIDIA card) are executed directly with fixed arguments, never through a shell, with `LC_ALL=C`.
 - **Nothing listens**: the agent opens no port and accepts no input from the network; it only sends. Nothing on the
   collector can command a machine.
 - **The machine, not the person**: a report holds the hostname, the machine id, the system, the kernel, the
-  chassis type (laptop or desktop) and the outcome of each check. No files, sites, applications, sessions or VPN state; `docker-ports` reports only the
+  chassis type (laptop or desktop), the hardware (models, sizes, firmware and microcode versions, the CPU flaws the
+  kernel reports, the MAC addresses of the network cards; no serial numbers) and the outcome of each check. No files, sites, applications, sessions or VPN state; `docker-ports` reports only the
   published port mappings, not the containers. The time of each report does tell that the machine was on then (see
   Retention).
 - **Only to the collector**: reports wait in `/var/lib/optionfactory-posture/queue`, readable only by root, and go
