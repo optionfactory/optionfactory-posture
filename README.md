@@ -29,6 +29,7 @@ Threat model, data protection and how to report a vulnerability: [SECURITY.md](S
 | `reboot-pending` | no `/var/run/reboot-required`, or younger than 7 days |
 | `security-updates` | `apt-get -s dist-upgrade` installs nothing from a security suite (the detail names at most 10 packages) |
 | `automatic-updates` | `unattended-upgrades` is installed and `apt-config dump` turns on `APT::Periodic::Update-Package-Lists` and `APT::Periodic::Unattended-Upgrade` |
+| `baseline` | the installed `optionfactory-workstation` or `optionfactory-laptop` is the version `apt-cache policy` would install (the detail names both): `unattended-upgrades` silently skips an upgrade that brings a package from an origin it does not allow yet |
 | `firewall` | ufw active, incoming denied or rejected by default |
 | `docker-ports` | no container port published on every interface (`0.0.0.0`, `::`): Docker bypasses ufw there. Only the mappings are reported, not the containers |
 | `sshd` | `sshd -T`: no password or keyboard-interactive login, no root, a `TrustedUserCAKeys` |
@@ -149,11 +150,11 @@ without `--machines` they read the default list, and fail if it is not there.
 `review` covers every machine of the list, with its owner, and each pending one with the first 8 digits of the hash of
 its token. A machine is reported when it never sent a report, when its newest report is older than 7 days (past thirty
 days, when only the daily summaries are left, the date of the latest summary is reported), or when a check has kept
-failing longer than its grace: 2 hours for `firewall`, 24 for `clock-sync`, 48 for `security-updates`, 4 for the rest. Every report is
-read, so any that cannot be read is reported, as is one stamped more than an hour ahead. Directories of machines no
-longer on the list are skipped. With `--html` it prints the same as the body of a mail (inline styles, the light
-palette of the pages), linking each machine to its page when given `--pages-url`, and prints nothing when nothing needs
-attention. What machines send (hostnames, details) is escaped.
+failing longer than its grace: 2 hours for `firewall`, 24 for `clock-sync`, 48 for `security-updates` and `baseline`, 4
+for the rest. Every report is read, so any that cannot be read is reported, as is one stamped more than an hour ahead.
+Directories of machines no longer on the list are skipped. With `--html` it prints the same as the body of a mail
+(inline styles, the light palette of the pages), linking each machine to its page when given `--pages-url`, and prints
+nothing when nothing needs attention. What machines send (hostnames, details) is escaped.
 
 `pending` prints each pending machine as a line for the list of machines, `<name> <owner> <hash>`, with `<owner>` to
 fill in, after a comment with its machine id and when it was first and last heard from.

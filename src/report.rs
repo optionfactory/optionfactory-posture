@@ -72,6 +72,7 @@ impl Report {
             ("reboot-pending", checks::reboot::check()),
             ("security-updates", checks::updates::check()),
             ("automatic-updates", checks::automatic_updates::check()),
+            ("baseline", checks::baseline::check()),
             ("firewall", checks::firewall::check()),
             ("docker-ports", checks::docker_ports::check()),
             ("sshd", checks::sshd::check()),

@@ -1,6 +1,7 @@
 pub mod apparmor;
 pub mod auto_login;
 pub mod automatic_updates;
+pub mod baseline;
 pub mod clock_sync;
 pub mod disk;
 pub mod docker_ports;

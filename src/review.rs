@@ -15,7 +15,7 @@ fn grace(check: &str) -> SignedDuration {
         // turned off for development
         "firewall" => SignedDuration::from_hours(2),
         // unattended-upgrades runs once a day
-        "security-updates" => SignedDuration::from_hours(48),
+        "security-updates" | "baseline" => SignedDuration::from_hours(48),
         // offline, the kernel stops calling the clock synchronized after some hours
         "clock-sync" => SignedDuration::from_hours(24),
         _ => SignedDuration::from_hours(4),
