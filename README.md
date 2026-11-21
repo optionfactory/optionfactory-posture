@@ -5,7 +5,8 @@ Security posture of optionfactory's developer workstations, for ISO/IEC 27001. O
 - `report`, on every workstation (hourly systemd timer, as root): runs the checks, queues the report and sends the
   queue to the collector.
 - `collect`, on the server: stores the reports of the approved machines, records the unknown ones as pending,
-  summarizes the reports after thirty days and, with a Google login, serves the reports as pages to a list of admins.
+  summarizes the reports after thirty days and, with a Google login, serves the reports as pages to a list of admins
+  and, for their own machines, to the owners.
 - `review`, on the server: one line per machine that needs attention, and one per pending machine.
 - `pending`, on the server: the pending machines, with the hash of their token.
 - `id`, on a workstation: its name and the hash of its token.
@@ -132,7 +133,9 @@ also serves:
 - `/machines/<name>`: the latest report in full with the hardware, the reports of the last thirty days and the daily
   summaries.
 
-Only the emails in `admins` (one per line, read again at every request) get in. Sessions last 12 hours and end when the
+The emails in `admins` (one per line, read again at every request) read every page. The owners of the machines on the
+list read only `/` and `/people/<owner>`, both with their own machines, and `/machines/<name>` of those machines; the
+other pages, and the machines of others, are not found for them. Sessions last 12 hours and end when the
 collector restarts. With `domain` Google offers only the accounts of that Google Workspace domain, and ID tokens of
 other domains are refused. Without `[login]` there are no pages and the collector opens no connection.
 

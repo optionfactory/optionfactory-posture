@@ -1,4 +1,4 @@
-use super::{Web, url_encode};
+use super::{Viewer, Web, url_encode};
 use crate::collect::Summary;
 use crate::machines::{self, Machine};
 use crate::report::{Report, Status};
@@ -239,7 +239,11 @@ const MACHINES_INTRO: &str = "The machines needing attention come first, with wh
 const CHECKS_INTRO: &str = "The outcome of each check in the latest report of these machines. <em>Unknown</em> is a \
     check that could not run, and counts as failing.";
 
-pub(super) fn render_overview(web: &Web, email: &str) -> Result<Option<String>, String> {
+/// An owner who is not an admin sees only their own machines.
+pub(super) fn render_overview(web: &Web, viewer: &Viewer) -> Result<Option<String>, String> {
+    if !viewer.admin {
+        return render_person(web, viewer, &viewer.email);
+    }
     let machines = machines::read(&web.machines)?;
     let pending = machines::pending(&web.reports, &machines)?;
     let now = Timestamp::now();
@@ -300,12 +304,15 @@ pub(super) fn render_overview(web: &Web, email: &str) -> Result<Option<String>, 
             ("checks", "Checks"),
             ("pending", "Waiting for approval"),
         ],
-        email,
+        Some(viewer),
         &body,
     )))
 }
 
-pub(super) fn render_people(web: &Web, email: &str) -> Result<Option<String>, String> {
+pub(super) fn render_people(web: &Web, viewer: &Viewer) -> Result<Option<String>, String> {
+    if !viewer.admin {
+        return Ok(None);
+    }
     let machines = machines::read(&web.machines)?;
     let now = Timestamp::now();
     let rows = rows(web, machines.iter(), now);
@@ -391,10 +398,13 @@ pub(super) fn render_people(web: &Web, email: &str) -> Result<Option<String>, St
         body.push_str("</tbody></table></div>");
     }
     body.push_str("</section>");
-    Ok(Some(page("People", "/people", &[], email, &body)))
+    Ok(Some(page("People", "/people", &[], Some(viewer), &body)))
 }
 
-pub(super) fn render_person(web: &Web, email: &str, owner: &str) -> Result<Option<String>, String> {
+pub(super) fn render_person(web: &Web, viewer: &Viewer, owner: &str) -> Result<Option<String>, String> {
+    if !viewer.admin && !owner.eq_ignore_ascii_case(&viewer.email) {
+        return Ok(None);
+    }
     let machines = machines::read(&web.machines)?;
     let now = Timestamp::now();
     let rows = rows(web, machines.iter().filter(|machine| machine.owner == owner), now);
@@ -411,9 +421,9 @@ pub(super) fn render_person(web: &Web, email: &str, owner: &str) -> Result<Optio
     body.push_str("</section>");
     Ok(Some(page(
         owner,
-        "/people",
+        if viewer.admin { "/people" } else { "/" },
         &[("machines", "Machines"), ("checks", "Checks")],
-        email,
+        Some(viewer),
         &body,
     )))
 }
@@ -422,7 +432,10 @@ const KIND_INTRO: &str = "The type comes from the chassis type the firmware give
     <em>Unknown</em> is a machine that never reported, one whose agent does not send the chassis type yet, or a \
     chassis that is neither a laptop nor a desktop, such as a virtual machine.";
 
-pub(super) fn render_types(web: &Web, email: &str) -> Result<Option<String>, String> {
+pub(super) fn render_types(web: &Web, viewer: &Viewer) -> Result<Option<String>, String> {
+    if !viewer.admin {
+        return Ok(None);
+    }
     let machines = machines::read(&web.machines)?;
     let now = Timestamp::now();
     let rows = rows(web, machines.iter(), now);
@@ -471,10 +484,13 @@ pub(super) fn render_types(web: &Web, email: &str) -> Result<Option<String>, Str
         );
     }
     body.push_str("</tbody></table></div></section>");
-    Ok(Some(page("Types", "/types", &[], email, &body)))
+    Ok(Some(page("Types", "/types", &[], Some(viewer), &body)))
 }
 
-pub(super) fn render_kind(web: &Web, email: &str, slug: &str) -> Result<Option<String>, String> {
+pub(super) fn render_kind(web: &Web, viewer: &Viewer, slug: &str) -> Result<Option<String>, String> {
+    if !viewer.admin {
+        return Ok(None);
+    }
     let Some(kind) = Kind::ALL.into_iter().find(|kind| kind.slug() == slug) else {
         return Ok(None);
     };
@@ -512,14 +528,18 @@ pub(super) fn render_kind(web: &Web, email: &str, slug: &str) -> Result<Option<S
         kind.plural(),
         "/types",
         &[("machines", "Machines"), ("checks", "Checks")],
-        email,
+        Some(viewer),
         &body,
     )))
 }
 
-pub(super) fn render_machine(web: &Web, email: &str, name: &str) -> Result<Option<String>, String> {
+pub(super) fn render_machine(web: &Web, viewer: &Viewer, name: &str) -> Result<Option<String>, String> {
     let machines = machines::read(&web.machines)?;
-    let Some(machine) = machines.iter().find(|machine| machine.name == name) else {
+    // someone else's machine is as missing as one not on the list: its name tells nothing
+    let Some(machine) = machines
+        .iter()
+        .find(|machine| machine.name == name && (viewer.admin || machine.owner.eq_ignore_ascii_case(&viewer.email)))
+    else {
         return Ok(None);
     };
     let now = Timestamp::now();
@@ -527,12 +547,16 @@ pub(super) fn render_machine(web: &Web, email: &str, name: &str) -> Result<Optio
     let kind = Kind::of(reports.first());
 
     let mut body = String::new();
+    // the types are for the admins
+    let kind_link = match viewer.admin {
+        true => format!("<a href=\"/types/{kind}\">{kind}</a>", kind = kind.slug()),
+        false => kind.slug().to_string(),
+    };
     let _ = write!(
         body,
-        "<p class=\"lead\"><a href=\"/people/{}\">{}</a> · <a href=\"/types/{kind}\">{kind}</a></p>",
+        "<p class=\"lead\"><a href=\"/people/{}\">{}</a> · {kind_link}</p>",
         url_encode(&machine.owner),
         escape(&machine.owner),
-        kind = kind.slug(),
     );
     if findings.is_empty() {
         body.push_str("<p class=\"verdict pass\">Nothing needs attention.</p>");
@@ -712,7 +736,7 @@ pub(super) fn render_machine(web: &Web, email: &str, name: &str) -> Result<Optio
             ("history", "Last thirty days"),
             ("daily", "Daily summaries"),
         ],
-        email,
+        Some(viewer),
         &body,
     )))
 }
@@ -876,7 +900,8 @@ pub(crate) fn escape(text: &str) -> String {
 }
 
 /// The page around a body: the views in the header for a signed-in admin, and links to the sections of the page.
-pub(super) fn page(title: &str, view: &str, sections: &[(&str, &str)], email: &str, body: &str) -> String {
+/// Without a viewer, the page of a message before the login.
+pub(super) fn page(title: &str, view: &str, sections: &[(&str, &str)], viewer: Option<&Viewer>, body: &str) -> String {
     let title = escape(title);
     let mut html = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -884,9 +909,13 @@ pub(super) fn page(title: &str, view: &str, sections: &[(&str, &str)], email: &s
          <link rel=\"icon\" href=\"/favicon.ico\"><link rel=\"stylesheet\" href=\"/posture.css\"></head><body><header>\
          <h1><a href=\"/\"><img src=\"/favicon.ico\" alt=\"\">Posture</a><span class=\"page\">/ {title}</span></h1>"
     );
-    if !email.is_empty() {
+    if let Some(viewer) = viewer {
         html.push_str("<nav class=\"views\">");
-        for (href, label) in [("/", "Machines"), ("/people", "People"), ("/types", "Types")] {
+        let views: &[(&str, &str)] = match viewer.admin {
+            true => &[("/", "Machines"), ("/people", "People"), ("/types", "Types")],
+            false => &[("/", "Machines")],
+        };
+        for &(href, label) in views {
             let active = if href == view {
                 " class=\"active\" aria-current=\"page\""
             } else {
@@ -899,7 +928,7 @@ pub(super) fn page(title: &str, view: &str, sections: &[(&str, &str)], email: &s
             "</nav><a class=\"sign-out\" href=\"/logout\" title=\"Sign out {}\" aria-label=\"Sign out\">\
              <svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4\"/>\
              <path d=\"m16 17 5-5-5-5M21 12H9\"/></svg></a>",
-            escape(email)
+            escape(&viewer.email)
         );
     }
     if !sections.is_empty() {
@@ -939,6 +968,13 @@ mod tests {
         }
     }
 
+    fn admin() -> Viewer {
+        Viewer {
+            email: "admin@optionfactory.net".to_string(),
+            admin: true,
+        }
+    }
+
     fn write_report(web: &Web, machine: &str, chassis_type: Option<u8>, firewall: Status) {
         let taken_at = Timestamp::now().round(jiff::Unit::Second).unwrap();
         let report = Report {
@@ -968,7 +1004,7 @@ mod tests {
         let web = web(&dir, "");
         machines::record_pending(&web.reports, &"0".repeat(64), "<script>alert(1)</script>", "id").unwrap();
 
-        let page = render_overview(&web, "mario.rossi@optionfactory.net").unwrap().unwrap();
+        let page = render_overview(&web, &admin()).unwrap().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(!page.contains("<script>"));
@@ -996,14 +1032,46 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        let mario = render_person(&web, "", "mario.rossi@optionfactory.net").unwrap();
-        let laptops = render_kind(&web, "", "laptop").unwrap();
-        let workstations = render_kind(&web, "", "workstation").unwrap();
-        let nobody = render_person(&web, "", "nobody@optionfactory.net").unwrap();
+        let mario = render_person(&web, &admin(), "mario.rossi@optionfactory.net").unwrap();
+        let laptops = render_kind(&web, &admin(), "laptop").unwrap();
+        let workstations = render_kind(&web, &admin(), "workstation").unwrap();
+        let nobody = render_person(&web, &admin(), "nobody@optionfactory.net").unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(machines_on(mario), ["kup", "box"]);
         assert_eq!(machines_on(laptops), ["kup", "lap"]);
         assert_eq!(machines_on(workstations), ["box"]);
         assert!(nobody.is_none());
+    }
+
+    #[test]
+    fn an_owner_sees_only_their_own_machines() {
+        let dir = std::env::temp_dir().join(format!("optionfactory-posture-web-owner-{}", std::process::id()));
+        let hash = "0".repeat(64);
+        let web = web(
+            &dir,
+            &format!("kup mario.rossi@optionfactory.net {hash}\nlap luigi.verdi@optionfactory.net {hash}\n"),
+        );
+        write_report(&web, "kup", Some(10), Status::Pass);
+        write_report(&web, "lap", Some(9), Status::Pass);
+        let mario = Viewer {
+            email: "mario.rossi@optionfactory.net".to_string(),
+            admin: false,
+        };
+
+        let overview = render_overview(&web, &mario).unwrap().unwrap();
+        let own = render_machine(&web, &mario, "kup").unwrap();
+        let others = [
+            render_machine(&web, &mario, "lap").unwrap(),
+            render_person(&web, &mario, "luigi.verdi@optionfactory.net").unwrap(),
+            render_people(&web, &mario).unwrap(),
+            render_types(&web, &mario).unwrap(),
+            render_kind(&web, &mario, "laptop").unwrap(),
+        ];
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(overview.contains("href=\"/machines/kup\""));
+        assert!(!overview.contains("href=\"/machines/lap\""));
+        assert!(!overview.contains("href=\"/people\""));
+        assert!(own.is_some_and(|page| !page.contains("href=\"/types/")));
+        assert!(others.iter().all(Option::is_none));
     }
 }

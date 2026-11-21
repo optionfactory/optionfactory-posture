@@ -64,13 +64,14 @@ Within that scope:
 ### The pages of the reports
 
 Optional: without a `[login]` section the collector serves no pages and opens no connection. With it, the reports are
-readable in a browser by the emails on the list of admins (`admins`), and the collector connects to Google to sign
-them in:
+readable in a browser by the emails on the list of admins (`admins`), those of a machine also by its owner on the list
+of machines, and the collector connects to Google to sign them in:
 
 - **Google signs in, the list decides**: the authorization code flow with PKCE and a state bound to a short cookie. The
   code goes back to Google over HTTPS, checked against the public roots built into the binary, and the ID token it
-  returns is checked for issuer, audience, expiry, a verified email and, with `domain`, its `hd` claim. The email must be on the list, read again at
-  every request, so taking someone off the list closes their session at once.
+  returns is checked for issuer, audience, expiry, a verified email and, with `domain`, its `hd` claim. The email must be on the list of admins or own a machine on the list of machines, both read again at every request, so
+  taking someone off the list, or their last machine, closes their session at once. An owner who is not an admin gets
+  the same "not found" for the machine of someone else as for a name not on the list.
 - **Sessions**: a cookie with the email and the expiry (12 hours), signed with a key made at start and kept only in
   memory: a restart signs everyone out. `HttpOnly`, `Secure`, `SameSite=Lax`.
 - **Read-only**: the pages only read the reports and the list of machines; nothing in them changes either, approves a
