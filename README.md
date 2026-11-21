@@ -25,7 +25,7 @@ Threat model, data protection and how to report a vulnerability: [SECURITY.md](S
 | `disk-encryption` | on every fixed disk (not USB, not removable) anything with a signature (filesystem, swap, LVM, RAID) is LUKS2 or sits on it; only the EFI system partition and `/boot` may stay in the clear |
 | `disk-recovery-keyslot` | every LUKS2 device has a keyslot not used by Clevis (the recovery passphrase) |
 | `disk-tang` | `clevis luks list` shows, on every LUKS2 device, a `tang` binding to `--tang-url` |
-| `os` | Linux Mint 22.x, Ubuntu 24.04 or Debian 13 |
+| `os` | Linux Mint 22.x, Ubuntu 24.04 or 26.04, Debian 13 |
 | `reboot-pending` | no `/var/run/reboot-required`, or younger than 7 days |
 | `security-updates` | `apt-get -s dist-upgrade` installs nothing from a security suite (the detail names at most 10 packages) |
 | `automatic-updates` | `unattended-upgrades` is installed and `apt-config dump` turns on `APT::Periodic::Update-Package-Lists` and `APT::Periodic::Unattended-Upgrade` |

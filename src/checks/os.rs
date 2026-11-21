@@ -33,11 +33,11 @@ impl Os {
         os
     }
 
-    /// Linux Mint 22.x, Ubuntu 24.04 LTS and Debian 13: the systems the baseline and the disk encryption support.
+    /// Linux Mint 22.x, Ubuntu 24.04 or 26.04 and Debian 13: the systems the baseline and the disk encryption support.
     pub fn check(&self) -> Outcome {
         let supported = match self.id.as_str() {
             "linuxmint" => self.version_id.split('.').next() == Some("22"),
-            "ubuntu" => self.version_id == "24.04",
+            "ubuntu" => matches!(self.version_id.as_str(), "24.04" | "26.04"),
             "debian" => self.version_id == "13",
             _ => false,
         };
