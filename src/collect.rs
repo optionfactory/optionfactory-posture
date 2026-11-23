@@ -200,7 +200,7 @@ async fn store(State((reports, machines)): State<(PathBuf, PathBuf)>, headers: H
         tokio::fs::write(&partial, &json).await?;
         // the time of arrival would tell when the machine was online: the file keeps only the time of the report
         let file = tokio::fs::OpenOptions::new().write(true).open(&partial).await?;
-        file.into_std().await.set_modified(SystemTime::from(taken_at))?;
+        file.into_std().await.set_modified(SystemTime::try_from(taken_at).map_err(std::io::Error::other)?)?;
         tokio::fs::rename(&partial, &path).await?;
         Ok::<_, std::io::Error>(StatusCode::NO_CONTENT)
     };
@@ -295,7 +295,7 @@ fn summarize_machine(dir: &Path, report_cutoff: &str, summary_cutoff: &str) -> s
             .filter_map(|json| serde_json::from_slice::<Report>(&json).ok());
         for report in reports {
             let summary = summary.get_or_insert_with(|| Summary {
-                date: report.taken_at.to_zoned(TimeZone::UTC).date(),
+                date: report.taken_at.to_zoned_datetime(TimeZone::UTC).date(),
                 hostname: String::new(),
                 checks: BTreeMap::new(),
             });
