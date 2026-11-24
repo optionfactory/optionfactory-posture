@@ -22,6 +22,9 @@ use tokio::signal::unix::{SignalKind, signal};
 /// A month of hourly reports fits, with room for a long queue coming back; past it the machine is misbehaving, and its
 /// reports wait in its own queue.
 const MOST_REPORTS: usize = 5_000;
+/// A report has about twenty checks: the bound keeps a hostile machine from filling a daily summary, which gathers the
+/// names of all the checks of a day.
+const MOST_CHECKS: usize = 64;
 /// Long enough for the review, whose longest margin is a week of silence.
 const REPORT_RETENTION: SignedDuration = SignedDuration::from_hours(30 * 24);
 /// Twelve months, the time between two audits.
@@ -233,6 +236,29 @@ fn destination(
             format!("taken in the future, at {}", report.taken_at),
         ));
     }
+    // it would be summarized at once; the agent drops what is refused with 400, instead of sending it again
+    if now.duration_since(report.taken_at) > REPORT_RETENTION {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("taken more than thirty days ago, at {}", report.taken_at),
+        ));
+    }
+    let valid_name = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    if report.checks.len() > MOST_CHECKS || !report.checks.iter().all(|check| valid_name(&check.name)) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{} checks, at most {MOST_CHECKS} named in [a-z0-9-]",
+                report.checks.len()
+            ),
+        ));
+    }
     let name = format!("{}.json", report.taken_at.strftime("%Y%m%dT%H%M%SZ"));
     let json = serde_json::to_vec(&report).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok((reports.join(machine).join(name), json, report.taken_at))
@@ -317,6 +343,10 @@ fn summarize_machine(dir: &Path, report_cutoff: &str, summary_cutoff: &str) -> s
             });
             summary.hostname = report.hostname;
             for check in report.checks {
+                // the reports were checked when stored, but not by an older collector
+                if summary.checks.len() >= MOST_CHECKS && !summary.checks.contains_key(&check.name) {
+                    continue;
+                }
                 let worst = match (summary.checks.get(&check.name), check.status) {
                     (Some(Status::Fail), _) | (_, Status::Fail) => Status::Fail,
                     (Some(Status::Unknown), _) | (_, Status::Unknown) => Status::Unknown,
@@ -416,6 +446,15 @@ mod tests {
             stored(&report("2026-10-27T12:00:00Z", Status::Pass)),
             Err(StatusCode::BAD_REQUEST)
         );
+        // past the retention, and with a check name that is not one
+        assert_eq!(
+            stored(&report("2026-09-20T12:00:00Z", Status::Pass)),
+            Err(StatusCode::BAD_REQUEST)
+        );
+        let renamed = String::from_utf8(report("2026-10-26T12:00:00Z", Status::Pass))
+            .unwrap()
+            .replace("\"firewall\"", "\"<b>firewall</b>\"");
+        assert_eq!(stored(renamed.as_bytes()), Err(StatusCode::BAD_REQUEST));
     }
 
     #[test]

@@ -119,7 +119,9 @@ logs of the pages name the client from `X-Forwarded-For` when the proxy sends it
 answers `POST /reports` and `GET /favicon.ico`, and the pages below when given a login.
 
 A report is stored only when it carries the token of a machine on the list (`Authorization: Bearer`), the body (at
-most 16 KiB) is a report and it is not more than an hour ahead. It goes to
+most 16 KiB) is a report with at most 64 checks named in `[a-z0-9-]`, and it is not more than an hour ahead nor older
+than thirty days (the agent drops it, as it would have been summarized at once). A daily summary keeps at most 64
+checks. It goes to
 `<reports>/<machine>/<YYYYmmddTHHMMSSZ>.json`, named by the collector after the list and the time: a machine cannot
 write reports for another one, nor choose the name. Past 5,000 reports for one machine the collector answers 507 and
 the report waits in the queue of the machine. The file keeps the time of the report as its modification time, not the
