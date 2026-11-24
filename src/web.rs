@@ -16,8 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const SESSION: SignedDuration = SignedDuration::from_hours(12);
-const SESSION_COOKIE: &str = "posture_session";
-const LOGIN_COOKIE: &str = "posture_login";
+/// `__Host-`: only this host, over HTTPS, at `/`, so that no sibling subdomain can plant it.
+const SESSION_COOKIE: &str = "__Host-posture_session";
+/// `__Secure-`: over HTTPS only; it stays under `/oidc`, which `__Host-` would not allow.
+const LOGIN_COOKIE: &str = "__Secure-posture_login";
 const STYLE: &str = include_str!("web/posture.css");
 const ADMINS_ONLY: &str = "Only the admins see this page.";
 
@@ -76,6 +78,7 @@ pub fn pages(reports: PathBuf, machines: PathBuf, login: Login) -> Result<Router
                     [
                         (header::CONTENT_TYPE, "text/css; charset=utf-8"),
                         (header::CACHE_CONTROL, "max-age=3600"),
+                        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
                     ],
                     STYLE,
                 )
@@ -437,10 +440,12 @@ fn html(status: StatusCode, page: String) -> Response {
         [
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; style-src 'self'; img-src 'self'; frame-ancestors 'none'",
+                "default-src 'none'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; \
+                 form-action 'none'",
             ),
             (header::CACHE_CONTROL, "no-store"),
             (header::REFERRER_POLICY, "no-referrer"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
         Html(page),
     )

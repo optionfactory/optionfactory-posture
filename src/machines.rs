@@ -24,8 +24,11 @@ pub fn read(path: &Path) -> Result<Vec<Machine>, String> {
     parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Two lines with the same name would share a directory of reports, two with the same token one machine: both refused.
+/// Owners are kept in lower case, as the logins give them.
 pub(crate) fn parse(text: &str) -> Result<Vec<Machine>, String> {
-    text.lines()
+    let machines: Vec<Machine> = text
+        .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|line| match line.split_whitespace().collect::<Vec<_>>()[..] {
@@ -39,13 +42,22 @@ pub(crate) fn parse(text: &str) -> Result<Vec<Machine>, String> {
             {
                 Ok(Machine {
                     name: name.to_string(),
-                    owner: owner.to_string(),
+                    owner: owner.to_ascii_lowercase(),
                     token_sha256: hash.to_ascii_lowercase(),
                 })
             }
             _ => Err(format!("not `<name> <owner> <sha256>`: {line}")),
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    for (i, machine) in machines.iter().enumerate() {
+        if let Some(twin) = machines[..i]
+            .iter()
+            .find(|other| other.name == machine.name || other.token_sha256 == machine.token_sha256)
+        {
+            return Err(format!("{} and {} share a name or a token", twin.name, machine.name));
+        }
+    }
+    Ok(machines)
 }
 
 fn is_sha256(text: &str) -> bool {
@@ -129,8 +141,16 @@ impl Pending {
             && self.machine_id.len() <= 64
             && self.machine_id.chars().all(|c| c.is_ascii_hexdigit());
         Pending {
-            hostname: if valid_hostname { hostname } else { "invalid".to_string() },
-            machine_id: if valid_id { self.machine_id } else { "invalid".to_string() },
+            hostname: if valid_hostname {
+                hostname
+            } else {
+                "invalid".to_string()
+            },
+            machine_id: if valid_id {
+                self.machine_id
+            } else {
+                "invalid".to_string()
+            },
             first_seen: self.first_seen,
         }
     }
@@ -248,7 +268,10 @@ mod tests {
             .cleaned();
             (cleaned.hostname, cleaned.machine_id)
         };
-        assert_eq!(pending("Kup.office", "0123abcd"), ("kup.office".into(), "0123abcd".into()));
+        assert_eq!(
+            pending("Kup.office", "0123abcd"),
+            ("kup.office".into(), "0123abcd".into())
+        );
         assert_eq!(
             pending("x\nkup (mario@x): firewall failing", "<b>"),
             ("invalid".into(), "invalid".into())
@@ -272,5 +295,7 @@ mod tests {
         assert_eq!(found(&format!("Bearer {}", "cd".repeat(32))), None);
         assert_eq!(token_sha256(Some("Bearer not-a-token")), None);
         assert!(parse("../etc owner 00").is_err());
+        let hash = "a".repeat(64);
+        assert!(parse(&format!("kup m@x {hash}\nlap l@x {hash}")).is_err());
     }
 }

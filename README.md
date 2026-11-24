@@ -75,7 +75,9 @@ they are wireless. Models are named from `pci.ids` and `usb.ids`. It also lists 
 
 The collector and the review read the same list of machines (`machines` in the settings of the collector, `--machines`
 or `POSTURE_MACHINES` for the review; default `/etc/optionfactory-posture/machines`), one `<name> <owner> <sha256 of the token>` per line, read again at every
-report. The name becomes the directory of the reports of the machine: `[a-z0-9-]` only.
+report. The name becomes the directory of the reports of the machine: `[a-z0-9-]` only. A list with two lines sharing a name or
+a token is refused as a whole (reports answered 500, pages and review failing) until it is fixed; owners are read in
+lower case.
 
 At its first run the agent creates its token, random and readable only by root, in `<state>/token`. The collector
 answers 401 to a token not on the list and records the machine as pending in `<reports>/.pending`, with the hostname

@@ -1513,12 +1513,12 @@ mod tests {
     #[test]
     fn a_person_sees_their_machines_and_a_type_its_machines() {
         let dir = std::env::temp_dir().join(format!("optionfactory-posture-web-views-{}", std::process::id()));
-        let hash = "0".repeat(64);
+        let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
         let web = web(
             &dir,
             &format!(
-                "kup mario.rossi@optionfactory.net {hash}\nbox mario.rossi@optionfactory.net {hash}\n\
-                 lap luigi.verdi@optionfactory.net {hash}\n"
+                "kup mario.rossi@optionfactory.net {a}\nbox mario.rossi@optionfactory.net {b}\n\
+                 lap luigi.verdi@optionfactory.net {c}\n"
             ),
         );
         write_report(&web, "kup", Some(10), Status::Pass);
@@ -1546,10 +1546,10 @@ mod tests {
     #[test]
     fn a_check_page_lists_the_machines_not_passing_it_then_those_passing() {
         let dir = std::env::temp_dir().join(format!("optionfactory-posture-web-check-{}", std::process::id()));
-        let hash = "0".repeat(64);
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
         let web = web(
             &dir,
-            &format!("kup mario.rossi@optionfactory.net {hash}\nlap luigi.verdi@optionfactory.net {hash}\n"),
+            &format!("kup mario.rossi@optionfactory.net {a}\nlap luigi.verdi@optionfactory.net {b}\n"),
         );
         write_report(&web, "kup", Some(10), Status::Fail);
         write_report(&web, "lap", Some(9), Status::Pass);
@@ -1567,10 +1567,10 @@ mod tests {
     #[test]
     fn an_owner_sees_only_their_own_machines() {
         let dir = std::env::temp_dir().join(format!("optionfactory-posture-web-owner-{}", std::process::id()));
-        let hash = "0".repeat(64);
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
         let web = web(
             &dir,
-            &format!("kup mario.rossi@optionfactory.net {hash}\nlap luigi.verdi@optionfactory.net {hash}\n"),
+            &format!("kup mario.rossi@optionfactory.net {a}\nlap luigi.verdi@optionfactory.net {b}\n"),
         );
         write_report(&web, "kup", Some(10), Status::Pass);
         write_report(&web, "lap", Some(9), Status::Pass);

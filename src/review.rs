@@ -554,9 +554,9 @@ mod tests {
 
     #[test]
     fn a_reminder_holds_only_what_its_owner_can_fix_with_what_to_do() {
-        let hash = "a".repeat(64);
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
         let machines = machines::parse(&format!(
-            "kup Mario.Rossi@optionfactory.net {hash}\nlap luigi.verdi@optionfactory.net {hash}\n"
+            "kup Mario.Rossi@optionfactory.net {a}\nlap luigi.verdi@optionfactory.net {b}\n"
         ))
         .unwrap();
         let pending = Pending {
