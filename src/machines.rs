@@ -1,7 +1,7 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -96,7 +96,11 @@ pub fn token(state: &Path) -> Result<String, String> {
         .and_then(|mut urandom| urandom.read_exact(&mut random))
         .map_err(|e| format!("/dev/urandom: {e}"))?;
     let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-    std::fs::create_dir_all(state).map_err(|e| format!("{}: {e}", state.display()))?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(state)
+        .map_err(|e| format!("{}: {e}", state.display()))?;
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
