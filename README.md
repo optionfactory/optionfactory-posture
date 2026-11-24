@@ -179,7 +179,8 @@ failing longer than its grace: 2 hours for `firewall`, 24 for `clock-sync`, 48 f
 for the rest. Every report is read, so any that cannot be read is reported, as is one stamped more than an hour ahead.
 Directories of machines no longer on the list are skipped. With `--html` it prints the same as the body of a mail
 (inline styles, the light palette of the pages), linking each machine to its page when given `--pages-url`, and prints
-nothing when nothing needs attention. What machines send (hostnames, details) is escaped. A check failing because it
+nothing when nothing needs attention. What machines send (hostnames, details) is escaped in the HTML, and kept on its line in the text: control characters
+become spaces. A check failing because it
 could not run (`unknown`) is reported as `could not run` rather than `failing`.
 
 With `--owner`, the reminder for one person: only the machines of that owner (case does not matter), each finding

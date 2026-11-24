@@ -48,22 +48,27 @@ pub enum Finding {
     },
 }
 
+/// One line each, in the terminal and in the text of the mails: what a machine sent cannot start a line of its own, nor
+/// send the terminal escape sequences.
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let line = |text: &str| -> String { text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect() };
         match self {
             Finding::Check {
                 name,
                 status: Status::Unknown,
                 since,
                 detail,
-            } => write!(f, "{name} could not run since {since}: {detail}"),
+            } => write!(f, "{} could not run since {since}: {}", line(name), line(detail)),
             Finding::Check {
                 name, since, detail, ..
-            } => write!(f, "{name} failing since {since}: {detail}"),
+            } => write!(f, "{} failing since {since}: {}", line(name), line(detail)),
             Finding::Silent { since } => write!(f, "no report since {since}"),
             Finding::Never => write!(f, "never reported"),
             Finding::Future { at } => write!(f, "report from the future: {at}"),
-            Finding::Unreadable { path, error } => write!(f, "unreadable report {}: {error}", path.display()),
+            Finding::Unreadable { path, error } => {
+                write!(f, "unreadable report {}: {}", path.display(), line(error))
+            }
         }
     }
 }
@@ -621,6 +626,17 @@ mod tests {
             text(within_grace),
             ["firewall failing since 2026-10-26T11:00:00Z: inactive"]
         );
+    }
+
+    #[test]
+    fn what_a_machine_sends_stays_on_its_line() {
+        let finding = Finding::Check {
+            name: "firewall".to_string(),
+            status: Status::Fail,
+            since: "2026-11-19T10:00:00Z".parse().unwrap(),
+            detail: "inactive\nlap (luigi.verdi@optionfactory.net): disk-encryption failing\x1b[2J".to_string(),
+        };
+        assert!(!finding.to_string().contains(['\n', '\x1b']));
     }
 
     #[test]
