@@ -1,21 +1,39 @@
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// A TCP port open to the network on the machine itself: the address and the port, never the process, which would tell
-/// the applications. The firewall decides who reaches it.
+/// A listening socket as `/proc/net/tcp` has it. Agents before 0.9.0 sent these, address included: they are read only
+/// to show them as ports.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Listening {
     pub address: IpAddr,
     pub port: u16,
 }
 
-/// The listening TCP sockets of `/proc/net/tcp` and `/proc/net/tcp6`, without those on loopback; `None` when they
-/// cannot be read, rather than an empty list that would say nothing listens. `tcp6` is missing only with IPv6 off.
-pub fn read() -> Option<Vec<Listening>> {
+/// A TCP port open to the network on the machine itself, and whether on every address of the machine or on one. Never
+/// the process, which would tell the applications, nor the address, which would tell the networks the machine is on
+/// (home, a VPN). The firewall decides who reaches it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Port {
+    pub port: u16,
+    pub everywhere: bool,
+}
+
+impl From<&Listening> for Port {
+    fn from(listening: &Listening) -> Port {
+        Port {
+            port: listening.port,
+            everywhere: listening.address.is_unspecified(),
+        }
+    }
+}
+
+/// The listening TCP ports of `/proc/net/tcp` and `/proc/net/tcp6`, without those on loopback; `None` when they cannot
+/// be read, rather than an empty list that would say nothing listens. `tcp6` is missing only with IPv6 off.
+pub fn read() -> Option<Vec<Port>> {
     let mut all = Vec::new();
     for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
         match std::fs::read_to_string(path) {
-            Ok(table) => all.extend(parse(&table)),
+            Ok(table) => all.extend(parse(&table).iter().map(Port::from)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && path.ends_with('6') => {}
             Err(_) => return None,
         }
@@ -81,5 +99,19 @@ mod tests {
 
         assert_eq!(parse(tcp), [listening("0.0.0.0", 22)]);
         assert_eq!(parse(tcp6), [listening("::", 8080)]);
+        // what reaches the collector: the port, and every address or one, never which
+        assert_eq!(
+            [&listening("::", 8080), &listening("192.168.1.5", 22)].map(Port::from),
+            [
+                Port {
+                    port: 8080,
+                    everywhere: true
+                },
+                Port {
+                    port: 22,
+                    everywhere: false
+                }
+            ]
+        );
     }
 }

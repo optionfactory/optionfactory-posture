@@ -28,7 +28,8 @@ pub struct Hardware {
     pub memory_kib: u64,
     /// The display controllers on the PCI bus.
     pub gpus: Vec<Gpu>,
-    /// The network cards: the interfaces with a device behind them, not the virtual ones (bridges, Docker, VPN).
+    /// The network cards built into the machine (PCI): not the virtual interfaces (bridges, Docker, VPN), nor USB ones,
+    /// which may be a phone tethered for a while.
     pub nics: Vec<Nic>,
 }
 
@@ -48,7 +49,7 @@ pub struct Gpu {
 pub struct Nic {
     /// `enp42s0`, `wlp0s20f3`.
     pub interface: String,
-    /// Vendor and model from `pci.ids` or `usb.ids`, or their ids when it does not know them.
+    /// Vendor and model from `pci.ids`, or their ids when it does not know them.
     pub name: String,
     pub driver: String,
     /// The address of the card itself, also when it shows the networks a random one.
@@ -123,7 +124,7 @@ impl Hardware {
                 memory_mib,
             });
         }
-        hardware.nics = nics(&pci_ids, &read("/usr/share/misc/usb.ids"));
+        hardware.nics = nics(&pci_ids);
         hardware
     }
 
@@ -149,7 +150,7 @@ impl Hardware {
     }
 }
 
-fn nics(pci_ids: &str, usb_ids: &str) -> Vec<Nic> {
+fn nics(pci_ids: &str) -> Vec<Nic> {
     // sysfs has only the address the card shows; `ip` adds the permanent one when it differs
     let permanent: BTreeMap<String, String> = crate::checks::stdout_of("ip", &["-json", "link", "show"])
         .ok()
@@ -168,7 +169,10 @@ fn nics(pci_ids: &str, usb_ids: &str) -> Vec<Nic> {
         .flatten()
         .flatten()
         .map(|entry| entry.path())
-        .filter(|interface| interface.join("device").exists())
+        .filter(|interface| {
+            std::fs::read_link(interface.join("device").join("subsystem"))
+                .is_ok_and(|subsystem| subsystem.file_name().is_some_and(|name| name == "pci"))
+        })
         .collect();
     interfaces.sort();
     interfaces
@@ -178,20 +182,8 @@ fn nics(pci_ids: &str, usb_ids: &str) -> Vec<Nic> {
             let id = |path: PathBuf| read(path).trim_start_matches("0x").to_string();
             let name = interface.file_name().unwrap_or_default().to_string_lossy().into_owned();
             let device = interface.join("device");
-            let subsystem = std::fs::read_link(device.join("subsystem")).unwrap_or_default();
-            let model = match subsystem.file_name().and_then(|name| name.to_str()) {
-                Some("pci") => {
-                    let (vendor, model) = (id(device.join("vendor")), id(device.join("device")));
-                    id_name(pci_ids, &vendor, &model).unwrap_or(format!("{vendor}:{model}"))
-                }
-                Some("usb") => {
-                    // the device is an interface of the USB device above it, which has the ids
-                    let usb = device.canonicalize().unwrap_or_default().join("..");
-                    let (vendor, model) = (id(usb.join("idVendor")), id(usb.join("idProduct")));
-                    id_name(usb_ids, &vendor, &model).unwrap_or(format!("{vendor}:{model}"))
-                }
-                _ => String::new(),
-            };
+            let (vendor, model) = (id(device.join("vendor")), id(device.join("device")));
+            let model = id_name(pci_ids, &vendor, &model).unwrap_or(format!("{vendor}:{model}"));
             Nic {
                 mac: permanent
                     .get(&name)
@@ -228,7 +220,7 @@ fn nvidia_memory_mib(stdout: &str) -> BTreeMap<String, u64> {
         .collect()
 }
 
-/// `pci.ids` and `usb.ids`: a vendor line `10de  NVIDIA Corporation`, then its devices indented by a tab, their
+/// `pci.ids`: a vendor line `10de  NVIDIA Corporation`, then its devices indented by a tab, their
 /// subsystems or interfaces by two.
 fn id_name(ids: &str, vendor: &str, device: &str) -> Option<String> {
     let mut lines = ids.lines().skip_while(|line| !line.starts_with(&format!("{vendor}  ")));

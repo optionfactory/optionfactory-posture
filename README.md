@@ -68,10 +68,13 @@ collector would refuse, are dropped from it.
 The report describes the machine, never the person using it: no files, sites, applications, sessions or VPN state.
 Besides the checks it carries the hardware, without serial numbers: manufacturer, model, board and BIOS from the
 firmware (`/sys/class/dmi/id`); CPU, threads and microcode, and what the kernel says of each known CPU flaw; memory; the
-graphics cards with their driver and memory (`amdgpu` in sysfs, `nvidia-smi` for `nvidia`); the network cards (not the
-virtual interfaces) with their driver, their own MAC address (`ip -json link` when Wi-Fi shows a random one) and whether
-they are wireless. Models are named from `pci.ids` and `usb.ids`. It also lists the TCP ports listening on the network
-(`/proc/net/tcp` and `tcp6`, not those on loopback): the address and the port, never the process.
+graphics cards with their driver and memory (`amdgpu` in sysfs, `nvidia-smi` for `nvidia`); the network cards built into
+the machine (PCI: not the virtual interfaces, nor USB ones such as a tethered phone) with their driver, their own MAC
+address (`ip -json link` when Wi-Fi shows a random one) and whether they are wireless. Models are named from `pci.ids`.
+It also lists the TCP ports listening on the network (`/proc/net/tcp` and `tcp6`, not those on loopback): the port, and
+whether on every address of the machine or on one; never the address, which would tell the networks it is on, nor the
+process. Check details name packages (`security-updates`, at most 10) and partitions, but of the mount points only the
+system ones (`/`, `/home`, `/boot`, ...): any other is `elsewhere`, since it may hold a user name or a volume label.
 
 ## Machines
 

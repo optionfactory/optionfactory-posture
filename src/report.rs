@@ -20,9 +20,14 @@ pub struct Report {
     pub chassis_type: Option<u8>,
     #[serde(default)]
     pub hardware: hardware::Hardware,
-    /// `None` from an agent older than the field, or one that could not read them: not a machine with nothing listening.
+    /// What agents before 0.9.0 sent, with the address: read through `ports`. Newer agents send `null`, which the
+    /// collectors before 0.9.0 still parse.
     #[serde(default)]
     pub listening: Option<Vec<listening::Listening>>,
+    /// The TCP ports open to the network. `None` from an agent older than the field, or one that could not read them:
+    /// not a machine with nothing listening.
+    #[serde(default)]
+    pub listening_ports: Option<Vec<listening::Port>>,
     pub checks: Vec<Check>,
 }
 
@@ -64,6 +69,16 @@ impl Check {
 }
 
 impl Report {
+    /// The listening ports, also from an agent that still sent the addresses.
+    pub fn ports(&self) -> Option<Vec<listening::Port>> {
+        self.listening_ports.clone().or_else(|| {
+            let mut ports: Vec<listening::Port> = self.listening.as_ref()?.iter().map(listening::Port::from).collect();
+            ports.sort();
+            ports.dedup();
+            Some(ports)
+        })
+    }
+
     pub fn take(tang_url: &str) -> Report {
         let os = checks::os::Os::read();
         let mut all = checks::disk::checks(tang_url);
@@ -94,7 +109,8 @@ impl Report {
             kernel: first_line("/proc/sys/kernel/osrelease"),
             chassis_type: first_line("/sys/class/dmi/id/chassis_type").parse().ok(),
             hardware: hardware::Hardware::read(),
-            listening: listening::read(),
+            listening: None,
+            listening_ports: listening::read(),
             checks: all,
         }
     }

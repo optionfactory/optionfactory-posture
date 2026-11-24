@@ -1107,10 +1107,11 @@ pub(super) fn render_machine(web: &Web, viewer: &Viewer, name: &str) -> Result<O
         &mut body,
         "listening",
         "Listening ports",
-        "The TCP ports open to the network on the machine itself in the latest report, without those on loopback: the \
-         firewall decides who reaches them. <code>0.0.0.0</code> and <code>::</code> are every address of the machine.",
+        "The TCP ports open to the network on the machine itself in the latest report, without those on loopback, and \
+         whether on every address of the machine or on one: the firewall decides who reaches them. The addresses \
+         are not reported.",
     );
-    match reports.first().map(|latest| &latest.listening) {
+    match reports.first().map(Report::ports) {
         None => body.push_str("<p class=\"empty\">No reports.</p>"),
         Some(None) => body.push_str(
             "<p class=\"empty\">Not in the latest report: an agent older than them, or one that could not read \
@@ -1119,11 +1120,16 @@ pub(super) fn render_machine(web: &Web, viewer: &Viewer, name: &str) -> Result<O
         Some(Some(listening)) if listening.is_empty() => body.push_str("<p class=\"empty\">None.</p>"),
         Some(Some(listening)) => {
             body.push_str("<p>");
-            for socket in listening {
+            for port in listening {
                 let _ = write!(
                     body,
-                    "<span class=\"chip\">{}</span>",
-                    std::net::SocketAddr::new(socket.address, socket.port)
+                    "<span class=\"chip\">{} · {}</span>",
+                    port.port,
+                    if port.everywhere {
+                        "every address"
+                    } else {
+                        "one address"
+                    }
                 );
             }
             body.push_str("</p>");
@@ -1480,6 +1486,7 @@ mod tests {
             chassis_type,
             hardware: Default::default(),
             listening: None,
+            listening_ports: None,
             checks: vec![Check::new("firewall", firewall, "inactive")],
         };
         let dir = web.reports.join(machine);

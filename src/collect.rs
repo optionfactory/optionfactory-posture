@@ -423,6 +423,7 @@ mod tests {
             chassis_type: None,
             hardware: Default::default(),
             listening: None,
+            listening_ports: None,
             checks: vec![Check::new("firewall", firewall, "inactive")],
         })
         .unwrap()

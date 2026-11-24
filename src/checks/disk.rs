@@ -95,6 +95,20 @@ struct Device {
     children: Vec<Device>,
 }
 
+/// The mount points a report names; any other is `elsewhere`.
+const SYSTEM_MOUNTS: &[&str] = &[
+    "/",
+    "/boot",
+    "/boot/efi",
+    "/home",
+    "/opt",
+    "/srv",
+    "/tmp",
+    "/usr",
+    "/var",
+    "[SWAP]",
+];
+
 impl Device {
     /// USB drives, card readers and optical drives come and go; zram is swap in memory.
     fn is_fixed_disk(&self) -> bool {
@@ -105,6 +119,15 @@ impl Device {
     /// partition, which the firmware reads, and `/boot`, kept outside LUKS by design. Empty partitions do not matter.
     fn sort_contents(&self, clear: &mut Vec<String>, luks: &mut Vec<String>) {
         let mounted: Vec<&str> = self.mountpoints.iter().flatten().map(String::as_str).collect();
+        // other mount points tell user names and volume labels (`/media/<user>/<label>`): only the system ones are named
+        let mut named: Vec<&str> = mounted
+            .iter()
+            .map(|mounted| match SYSTEM_MOUNTS.contains(mounted) {
+                true => *mounted,
+                false => "elsewhere",
+            })
+            .collect();
+        named.dedup();
         match self.fstype.as_deref() {
             None => self.children.iter().for_each(|child| child.sort_contents(clear, luks)),
             Some("crypto_LUKS") if self.fsver.as_deref() == Some("2") => luks.push(self.path.clone()),
@@ -116,7 +139,7 @@ impl Device {
                     .is_some_and(|t| ESP_PARTITION_TYPES.contains(&t)) => {}
             Some(_) if mounted == ["/boot"] => {}
             Some(fstype) if mounted.is_empty() => clear.push(format!("{} {fstype}", self.path)),
-            Some(fstype) => clear.push(format!("{} {fstype} ({})", self.path, mounted.join(", "))),
+            Some(fstype) => clear.push(format!("{} {fstype} ({})", self.path, named.join(", "))),
         }
     }
 }
@@ -210,7 +233,8 @@ mod tests {
             disk.sort_contents(&mut clear, &mut luks);
         }
         assert_eq!(luks, ["/dev/nvme0n1p3"]);
-        assert_eq!(clear, ["/dev/nvme0n1p4 swap ([SWAP])", "/dev/sda1 ext4 (/mnt/data)"]);
+        // a mount point outside the system ones is not named: it may hold a user name or a volume label
+        assert_eq!(clear, ["/dev/nvme0n1p4 swap ([SWAP])", "/dev/sda1 ext4 (elsewhere)"]);
     }
 
     #[test]
