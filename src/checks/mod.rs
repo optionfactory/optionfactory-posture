@@ -14,6 +14,30 @@ pub mod screen_lock;
 pub mod sshd;
 pub mod updates;
 
+/// What a check verifies, in a few words: the table of the README, for the pages.
+pub fn about(check: &str) -> Option<&'static str> {
+    Some(match check {
+        "disk-encryption" => "every fixed disk is encrypted with LUKS2, except the EFI system partition and /boot",
+        "disk-recovery-keyslot" => "every LUKS2 device has a recovery passphrase besides Clevis",
+        "disk-tang" => "every LUKS2 device is bound to the Tang server of the office",
+        "os" => "the system is a supported release",
+        "reboot-pending" => "no reboot has been pending for more than 7 days",
+        "security-updates" => "no security update is waiting to be installed",
+        "automatic-updates" => "unattended-upgrades refreshes the package lists and installs the updates every day",
+        "baseline" => "the installed baseline profile is the published version",
+        "firewall" => "ufw is active and denies incoming connections by default",
+        "docker-ports" => "no container port is published on every interface, where Docker bypasses ufw",
+        "sshd" => "the SSH server takes no password and no root login, and trusts the company certificates",
+        "empty-passwords" => "no account is without a password",
+        "apparmor" => "AppArmor is on, with its profiles enforced",
+        "journal" => "the system journal survives reboots",
+        "clock-sync" => "the clock is synchronized over the network",
+        "screen-lock" => "the screen locks after at most 15 minutes, and the setting is locked",
+        "auto-login" => "nobody is logged in automatically at boot",
+        _ => return None,
+    })
+}
+
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};

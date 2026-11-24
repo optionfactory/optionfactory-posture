@@ -67,6 +67,8 @@ pub fn pages(reports: PathBuf, machines: PathBuf, login: Login) -> Result<Router
         .route("/people/{owner}", get(person))
         .route("/types", get(kinds))
         .route("/types/{kind}", get(kind))
+        .route("/checks", get(checks))
+        .route("/checks/{name}", get(check))
         .route(
             "/posture.css",
             get(|| async {
@@ -85,8 +87,17 @@ pub fn pages(reports: PathBuf, machines: PathBuf, login: Login) -> Result<Router
         .with_state(web))
 }
 
-async fn overview(State(web): State<Arc<Web>>, headers: HeaderMap) -> Response {
-    signed_in_page(web, headers, "", pages::render_overview).await
+/// `?show=attention` or `?show=passing`: the machines of a summary card.
+#[derive(Deserialize)]
+struct Show {
+    show: Option<String>,
+}
+
+async fn overview(State(web): State<Arc<Web>>, headers: HeaderMap, Query(query): Query<Show>) -> Response {
+    signed_in_page(web, headers, "", move |web, viewer| {
+        pages::render_overview(web, viewer, query.show.as_deref())
+    })
+    .await
 }
 
 async fn machine(State(web): State<Arc<Web>>, headers: HeaderMap, UrlPath(name): UrlPath<String>) -> Response {
@@ -100,9 +111,14 @@ async fn people(State(web): State<Arc<Web>>, headers: HeaderMap) -> Response {
     signed_in_page(web, headers, ADMINS_ONLY, pages::render_people).await
 }
 
-async fn person(State(web): State<Arc<Web>>, headers: HeaderMap, UrlPath(owner): UrlPath<String>) -> Response {
+async fn person(
+    State(web): State<Arc<Web>>,
+    headers: HeaderMap,
+    UrlPath(owner): UrlPath<String>,
+    Query(query): Query<Show>,
+) -> Response {
     signed_in_page(web, headers, "Owns no machine on the list.", move |web, viewer| {
-        pages::render_person(web, viewer, &owner)
+        pages::render_person(web, viewer, &owner, query.show.as_deref())
     })
     .await
 }
@@ -111,9 +127,25 @@ async fn kinds(State(web): State<Arc<Web>>, headers: HeaderMap) -> Response {
     signed_in_page(web, headers, ADMINS_ONLY, pages::render_types).await
 }
 
-async fn kind(State(web): State<Arc<Web>>, headers: HeaderMap, UrlPath(kind): UrlPath<String>) -> Response {
+async fn kind(
+    State(web): State<Arc<Web>>,
+    headers: HeaderMap,
+    UrlPath(kind): UrlPath<String>,
+    Query(query): Query<Show>,
+) -> Response {
     signed_in_page(web, headers, "No such type of machine.", move |web, viewer| {
-        pages::render_kind(web, viewer, &kind)
+        pages::render_kind(web, viewer, &kind, query.show.as_deref())
+    })
+    .await
+}
+
+async fn checks(State(web): State<Arc<Web>>, headers: HeaderMap) -> Response {
+    signed_in_page(web, headers, ADMINS_ONLY, pages::render_checks).await
+}
+
+async fn check(State(web): State<Arc<Web>>, headers: HeaderMap, UrlPath(name): UrlPath<String>) -> Response {
+    signed_in_page(web, headers, "No such check.", move |web, viewer| {
+        pages::render_check(web, viewer, &name)
     })
     .await
 }

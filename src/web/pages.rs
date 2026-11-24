@@ -1,8 +1,9 @@
 use super::{Viewer, Web, url_encode};
+use crate::checks;
 use crate::collect::Summary;
 use crate::machines::{self, Machine};
 use crate::report::{Report, Status};
-use crate::review;
+use crate::review::{self, Finding};
 use jiff::Timestamp;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -52,7 +53,8 @@ impl Kind {
 struct Row<'a> {
     machine: &'a Machine,
     latest: Option<Report>,
-    findings: Vec<String>,
+    findings: Vec<Finding>,
+    within_grace: Vec<Finding>,
     kind: Kind,
 }
 
@@ -62,20 +64,39 @@ impl Row<'_> {
             .as_ref()
             .is_some_and(|latest| latest.checks.iter().all(|check| check.status == Status::Pass))
     }
+
+    /// The finding about a check not passing, and whether it is past its grace.
+    fn not_passing(&self, check: &str) -> Option<(&Finding, bool)> {
+        not_passing(&self.findings, &self.within_grace, check)
+    }
+}
+
+fn not_passing<'f>(findings: &'f [Finding], within_grace: &'f [Finding], check: &str) -> Option<(&'f Finding, bool)> {
+    let about = |finding: &&Finding| matches!(finding, Finding::Check { name, .. } if name == check);
+    findings
+        .iter()
+        .find(about)
+        .map(|finding| (finding, true))
+        .or_else(|| within_grace.iter().find(about).map(|finding| (finding, false)))
 }
 
 /// The machines needing attention first, then by name.
 fn rows<'a>(web: &Web, machines: impl Iterator<Item = &'a Machine>, now: Timestamp) -> Vec<Row<'a>> {
     let mut rows: Vec<Row> = machines
         .map(|machine| {
+            let review::Reviewed {
+                reports,
+                findings,
+                within_grace,
+            } = review::reviewed(&web.reports, machine, now);
             // one machine at a time: only its latest report is kept
-            let (reports, findings) = review::reviewed(&web.reports, machine, now);
             let latest = reports.into_iter().next();
             Row {
                 kind: Kind::of(latest.as_ref()),
                 machine,
                 latest,
                 findings,
+                within_grace,
             }
         })
         .collect();
@@ -83,17 +104,32 @@ fn rows<'a>(web: &Web, machines: impl Iterator<Item = &'a Machine>, now: Timesta
     rows
 }
 
+/// The machines a summary card leads to: all of them, or `?show=attention`, `?show=passing`.
+fn shown<'r, 'a>(rows: &'r [Row<'a>], show: Option<&str>) -> (Vec<&'r Row<'a>>, Option<&'static str>) {
+    match show {
+        Some("attention") => (
+            rows.iter().filter(|row| !row.findings.is_empty()).collect(),
+            Some("needing attention"),
+        ),
+        Some("passing") => (
+            rows.iter().filter(|row| row.passing()).collect(),
+            Some("passing every check"),
+        ),
+        _ => (rows.iter().collect(), None),
+    }
+}
+
 struct Card<'a> {
     label: &'a str,
     value: usize,
     class: &'a str,
-    href: Option<&'a str>,
+    href: Option<String>,
 }
 
 fn metrics(body: &mut String, cards: &[Card]) {
     body.push_str("<div class=\"metrics\">");
     for card in cards {
-        let (open, close) = match card.href {
+        let (open, close) = match &card.href {
             Some(href) => (format!("<a href=\"{href}\""), "</a>"),
             None => ("<div".to_string(), "</div>"),
         };
@@ -106,27 +142,28 @@ fn metrics(body: &mut String, cards: &[Card]) {
     body.push_str("</div>");
 }
 
-/// Machines, needing attention, passing every check: the cards of every page about a set of machines.
-fn machine_cards<'a>(rows: &[Row]) -> Vec<Card<'a>> {
+/// Machines, needing attention, passing every check: the cards of every page about a set of machines, each leading to
+/// the list at `base` showing those machines.
+fn machine_cards<'a>(rows: &[Row], base: &str) -> Vec<Card<'a>> {
     let attention = rows.iter().filter(|row| !row.findings.is_empty()).count();
     vec![
         Card {
             label: "Machines",
             value: rows.len(),
             class: "all",
-            href: None,
+            href: Some(format!("{base}#machines")),
         },
         Card {
             label: "Needing attention",
             value: attention,
             class: if attention > 0 { "fail" } else { "pass" },
-            href: None,
+            href: Some(format!("{base}?show=attention#machines")),
         },
         Card {
             label: "Passing every check",
             value: rows.iter().filter(|row| row.passing()).count(),
             class: "pass",
-            href: None,
+            href: Some(format!("{base}?show=passing#machines")),
         },
     ]
 }
@@ -138,7 +175,24 @@ fn section(body: &mut String, id: &str, title: &str, intro: &str) {
     );
 }
 
-fn machines_table(body: &mut String, rows: &[Row], now: Timestamp) {
+/// The machines of a page, narrowed to those of a summary card when it says so.
+fn machines_section(body: &mut String, rows: &[Row], show: Option<&str>, base: &str, now: Timestamp, admin: bool) {
+    section(body, "machines", "Machines", MACHINES_INTRO);
+    let (shown, filter) = shown(rows, show);
+    if let Some(filter) = filter {
+        let _ = write!(
+            body,
+            "<p class=\"filter\">The {} machines {filter}, of {}. <a href=\"{base}#machines\">Show them all</a></p>",
+            shown.len(),
+            rows.len()
+        );
+    }
+    machines_table(body, &shown, now, admin);
+    body.push_str("</section>");
+}
+
+/// The types, the checks and the people are pages for the admins: an owner gets their names without links.
+fn machines_table(body: &mut String, rows: &[&Row], now: Timestamp, admin: bool) {
     if rows.is_empty() {
         body.push_str("<p class=\"empty\">None.</p>");
         return;
@@ -148,66 +202,205 @@ fn machines_table(body: &mut String, rows: &[Row], now: Timestamp) {
          </thead><tbody>",
     );
     for row in rows {
+        let kind = match admin {
+            true => format!("<a href=\"/types/{kind}\">{kind}</a>", kind = row.kind.slug()),
+            false => row.kind.slug().to_string(),
+        };
         let _ = write!(
             body,
             "<tr class=\"{}\"><td><a href=\"/machines/{name}\">{name}</a><a class=\"owner\" href=\"/people/{}\">{}</a></td>\
-             <td data-label=\"Type\"><a href=\"/types/{kind}\">{kind}</a></td>\
-             <td class=\"time\" data-label=\"Last report\">{}</td><td data-label=\"State\">",
+             <td data-label=\"Type\">{kind}</td><td class=\"time\" data-label=\"Last report\">{}</td>\
+             <td data-label=\"State\">{}</td></tr>",
             if row.findings.is_empty() { "ok" } else { "attention" },
             url_encode(&row.machine.owner),
             escape(&row.machine.owner),
             row.latest
                 .as_ref()
-                .map(|latest| ago(latest.taken_at, now))
+                .map(|latest| when(latest.taken_at, now))
                 .unwrap_or_else(|| "never".to_string()),
+            state(row, now, admin),
             name = escape(&row.machine.name),
-            kind = row.kind.slug(),
         );
-        if let Some(latest) = &row.latest {
-            body.push_str(&not_passing(
-                latest.checks.iter().map(|check| (&check.name, check.status)),
-            ));
-        }
-        attention(body, &row.findings);
-        body.push_str("</td></tr>");
     }
     body.push_str("</tbody></table></div>");
 }
 
-/// How many machines pass, fail or cannot run each check in their latest report, the most failed first.
-fn checks_table(body: &mut String, rows: &[Row]) {
-    let mut counts: BTreeMap<&str, [usize; 3]> = BTreeMap::new();
-    for check in rows
-        .iter()
-        .filter_map(|row| row.latest.as_ref())
-        .flat_map(|latest| &latest.checks)
-    {
-        let count = counts.entry(&check.name).or_default();
-        count[match check.status {
-            Status::Pass => 0,
-            Status::Fail => 1,
-            Status::Unknown => 2,
-        }] += 1;
+/// One line per finding, then the checks still within their grace; `all pass` when there is nothing.
+fn state(row: &Row, now: Timestamp, admin: bool) -> String {
+    if row.findings.is_empty() && row.within_grace.is_empty() {
+        return match row.latest {
+            Some(_) => "<span class=\"chip pass\">all pass</span>".to_string(),
+            None => String::new(),
+        };
     }
-    if counts.is_empty() {
+    let mut html = String::from("<ul class=\"findings\">");
+    for finding in &row.findings {
+        let _ = write!(html, "<li>{}</li>", finding_html(finding, now, admin, true));
+    }
+    for finding in &row.within_grace {
+        let _ = write!(html, "<li>{}</li>", finding_html(finding, now, admin, false));
+    }
+    html.push_str("</ul>");
+    html
+}
+
+/// A finding as a chip, how long it has lasted and its detail. A check `due` is past its grace.
+fn finding_html(finding: &Finding, now: Timestamp, admin: bool, due: bool) -> String {
+    let lasting = |since: Timestamp| {
+        format!(
+            "<span class=\"since\" title=\"since {} UTC\">for {}</span>",
+            minutes(since),
+            for_how_long(since, now)
+        )
+    };
+    match finding {
+        Finding::Check {
+            name,
+            status,
+            since,
+            detail,
+        } => {
+            let (class, state) = match (due, status) {
+                (false, _) => ("grace", " <span class=\"since\">within grace</span>"),
+                (true, Status::Unknown) => ("unknown", " <span class=\"since\">could not run</span>"),
+                (true, _) => ("fail", ""),
+            };
+            format!(
+                "{} {}{state} <span class=\"detail\">{}</span>",
+                check_chip(name, class, admin),
+                lasting(*since),
+                escape(detail)
+            )
+        }
+        Finding::Silent { since } => format!("<span class=\"chip fail\">no report</span> {}", lasting(*since)),
+        Finding::Never => "<span class=\"chip fail\">never reported</span>".to_string(),
+        Finding::Future { at } => format!(
+            "<span class=\"chip fail\">clock ahead</span> <span class=\"detail\">a report stamped {} UTC</span>",
+            minutes(*at)
+        ),
+        Finding::Unreadable { path, error } => format!(
+            "<span class=\"chip fail\">unreadable report</span> <span class=\"detail\">{}: {}</span>",
+            escape(&path.display().to_string()),
+            escape(error)
+        ),
+    }
+}
+
+/// A finding as a single chip, where a line would not fit.
+fn finding_chip(finding: &Finding, admin: bool) -> String {
+    match finding {
+        Finding::Check {
+            name,
+            status: Status::Unknown,
+            ..
+        } => check_chip(name, "unknown", admin),
+        Finding::Check { name, .. } => check_chip(name, "fail", admin),
+        Finding::Silent { .. } => "<span class=\"chip fail\">no report</span>".to_string(),
+        Finding::Never => "<span class=\"chip fail\">never reported</span>".to_string(),
+        Finding::Future { .. } => "<span class=\"chip fail\">clock ahead</span>".to_string(),
+        Finding::Unreadable { .. } => "<span class=\"chip fail\">unreadable report</span>".to_string(),
+    }
+}
+
+/// A check name, the reports say which: escaped, and linked to its page for the admins.
+fn check_chip(name: &str, class: &str, link: bool) -> String {
+    match link {
+        true => format!(
+            "<a class=\"chip {class}\" href=\"/checks/{}\">{}</a>",
+            url_encode(name),
+            escape(name)
+        ),
+        false => format!("<span class=\"chip {class}\">{}</span>", escape(name)),
+    }
+}
+
+fn remedy_html(remedy: Option<&str>) -> String {
+    remedy
+        .map(|remedy| format!("<div class=\"remedy\">To do: {}</div>", escape(remedy)))
+        .unwrap_or_default()
+}
+
+fn machine_pill(row: &Row, class: &str) -> String {
+    format!(
+        "<a class=\"{class}\" href=\"/machines/{name}\">{name}</a>",
+        name = escape(&row.machine.name)
+    )
+}
+
+/// A check across machines: those whose latest report has it, by outcome.
+struct CheckRows<'r> {
+    name: &'r str,
+    pass: Vec<&'r Row<'r>>,
+    fail: Vec<&'r Row<'r>>,
+    unknown: Vec<&'r Row<'r>>,
+}
+
+/// The most failed first.
+fn by_check<'r>(rows: impl IntoIterator<Item = &'r Row<'r>>) -> Vec<CheckRows<'r>> {
+    let mut by_name: BTreeMap<&'r str, CheckRows<'r>> = BTreeMap::new();
+    for row in rows {
+        let Some(latest) = &row.latest else {
+            continue;
+        };
+        for check in &latest.checks {
+            let rows = by_name.entry(&check.name).or_insert_with(|| CheckRows {
+                name: &check.name,
+                pass: Vec::new(),
+                fail: Vec::new(),
+                unknown: Vec::new(),
+            });
+            match check.status {
+                Status::Pass => rows.pass.push(row),
+                Status::Fail => rows.fail.push(row),
+                Status::Unknown => rows.unknown.push(row),
+            }
+        }
+    }
+    let mut all: Vec<CheckRows> = by_name.into_values().collect();
+    all.sort_by_key(|check| Reverse(check.fail.len() + check.unknown.len()));
+    all
+}
+
+/// How many machines pass, fail or cannot run each check in their latest report, and which do not pass.
+fn checks_table<'r>(body: &mut String, rows: impl IntoIterator<Item = &'r Row<'r>>, admin: bool) {
+    let checks = by_check(rows);
+    if checks.is_empty() {
         body.push_str("<p class=\"empty\">No reports.</p>");
         return;
     }
-    let mut counts: Vec<_> = counts.into_iter().collect();
-    counts.sort_by_key(|(_, [_, fail, unknown])| Reverse(fail + unknown));
     body.push_str(
         "<div class=\"table\"><table><thead><tr><th>Check</th><th class=\"number\">Pass</th>\
-         <th class=\"number\">Fail</th><th class=\"number\">Unknown</th></tr></thead><tbody>",
+         <th class=\"number\">Fail</th><th class=\"number\">Could not run</th><th>Not passing on</th></tr></thead>\
+         <tbody>",
     );
-    for (name, [pass, fail, unknown]) in counts {
+    for check in &checks {
+        let name = match admin {
+            true => format!(
+                "<a class=\"check\" href=\"/checks/{}\">{}</a>",
+                url_encode(check.name),
+                escape(check.name)
+            ),
+            false => escape(check.name),
+        };
+        let about = checks::about(check.name)
+            .map(|about| format!("<div class=\"about\">{about}</div>"))
+            .unwrap_or_default();
+        let machines: Vec<String> = check
+            .fail
+            .iter()
+            .map(|row| machine_pill(row, "danger"))
+            .chain(check.unknown.iter().map(|row| machine_pill(row, "warning")))
+            .collect();
         let _ = write!(
             body,
-            "<tr class=\"{}\"><td>{}</td><td class=\"number\" data-label=\"Pass\">{pass}</td>\
-             <td class=\"number\" data-label=\"Fail\">{}</td><td class=\"number\" data-label=\"Unknown\">{}</td></tr>",
-            if fail + unknown == 0 { "ok" } else { "attention" },
-            escape(name),
-            count_chip(fail, "fail"),
-            count_chip(unknown, "unknown"),
+            "<tr class=\"{}\"><td>{name}{about}</td><td class=\"number\" data-label=\"Pass\">{}</td>\
+             <td class=\"number\" data-label=\"Fail\">{}</td>\
+             <td class=\"number\" data-label=\"Could not run\">{}</td><td data-label=\"Not passing on\">{}</td></tr>",
+            if machines.is_empty() { "ok" } else { "attention" },
+            check.pass.len(),
+            count_chip(check.fail.len(), "fail"),
+            count_chip(check.unknown.len(), "unknown"),
+            machines.join(" "),
         );
     }
     body.push_str("</tbody></table></div>");
@@ -221,28 +414,17 @@ fn count_chip(count: usize, class: &str) -> String {
     }
 }
 
-fn attention(body: &mut String, findings: &[String]) {
-    if findings.is_empty() {
-        return;
-    }
-    body.push_str("<ul class=\"attention\">");
-    for finding in findings {
-        let _ = write!(body, "<li>{}</li>", escape(finding));
-    }
-    body.push_str("</ul>");
-}
-
 const MACHINES_INTRO: &str = "The machines needing attention come first, with what the review reports about them: a \
-    check failing longer than its grace, no report for a week, a report that cannot be read. The chips are the checks \
-    not passing in the latest report.";
+    check failing longer than its grace, no report for a week, a report that cannot be read. Checks failing for a \
+    shorter time are shown <em>within grace</em>: not a finding yet.";
 
-const CHECKS_INTRO: &str = "The outcome of each check in the latest report of these machines. <em>Unknown</em> is a \
-    check that could not run, and counts as failing.";
+const CHECKS_INTRO: &str = "The outcome of each check in the latest report of these machines, and the machines where \
+    it does not pass. <em>Could not run</em> counts as failing.";
 
 /// An owner who is not an admin sees only their own machines.
-pub(super) fn render_overview(web: &Web, viewer: &Viewer) -> Result<Option<String>, String> {
+pub(super) fn render_overview(web: &Web, viewer: &Viewer, show: Option<&str>) -> Result<Option<String>, String> {
     if !viewer.admin {
-        return render_person(web, viewer, &viewer.email);
+        return render_person(web, viewer, &viewer.email, show);
     }
     let machines = machines::read(&web.machines)?;
     let pending = machines::pending(&web.reports, &machines)?;
@@ -250,19 +432,17 @@ pub(super) fn render_overview(web: &Web, viewer: &Viewer) -> Result<Option<Strin
     let rows = rows(web, machines.iter(), now);
 
     let mut body = String::new();
-    let mut cards = machine_cards(&rows);
+    let mut cards = machine_cards(&rows, "/");
     cards.push(Card {
         label: "Waiting for approval",
         value: pending.len(),
         class: if pending.is_empty() { "pass" } else { "wait" },
-        href: Some("#pending"),
+        href: Some("#pending".to_string()),
     });
     metrics(&mut body, &cards);
-    section(&mut body, "machines", "Machines", MACHINES_INTRO);
-    machines_table(&mut body, &rows, now);
-    body.push_str("</section>");
+    machines_section(&mut body, &rows, show, "/", now, true);
     section(&mut body, "checks", "Checks", CHECKS_INTRO);
-    checks_table(&mut body, &rows);
+    checks_table(&mut body, &rows, true);
     body.push_str("</section>");
 
     section(
@@ -288,8 +468,8 @@ pub(super) fn render_overview(web: &Web, viewer: &Viewer) -> Result<Option<Strin
                  <td data-label=\"Hash of the token\"><code>{}</code></td></tr>",
                 escape(&machine.hostname),
                 escape(&machine.machine_id),
-                minutes(machine.first_seen),
-                minutes(*last_seen),
+                when(machine.first_seen, now),
+                when(*last_seen, now),
                 escape(hash)
             );
         }
@@ -316,9 +496,12 @@ pub(super) fn render_people(web: &Web, viewer: &Viewer) -> Result<Option<String>
     let machines = machines::read(&web.machines)?;
     let now = Timestamp::now();
     let rows = rows(web, machines.iter(), now);
-    let mut people: BTreeMap<&str, Vec<&Row>> = BTreeMap::new();
+    let mut people: BTreeMap<String, Vec<&Row>> = BTreeMap::new();
     for row in &rows {
-        people.entry(&row.machine.owner).or_default().push(row);
+        people
+            .entry(row.machine.owner.to_ascii_lowercase())
+            .or_default()
+            .push(row);
     }
     let mut people: Vec<_> = people.into_iter().collect();
     // the ones with a machine needing attention first
@@ -350,34 +533,40 @@ pub(super) fn render_people(web: &Web, viewer: &Viewer) -> Result<Option<String>
         &mut body,
         "people",
         "People",
-        "The owners on the list of machines, each with their machines: those in red need attention. The people with \
-         one of them come first.",
+        "The owners on the list of machines, each with their machines and what needs attention on them. The people \
+         with something to do come first.",
     );
     if people.is_empty() {
         body.push_str("<p class=\"empty\">None.</p>");
     } else {
         body.push_str(
-            "<div class=\"table\"><table><thead><tr><th>Person</th><th>Machines</th>\
-             <th class=\"number\">Needing attention</th><th>Last report</th></tr></thead><tbody>",
+            "<div class=\"table\"><table><thead><tr><th>Person</th><th>Machines</th><th>Needs attention</th>\
+             <th>Last report</th></tr></thead><tbody>",
         );
         for (owner, theirs) in &people {
-            let attention = theirs.iter().filter(|row| !row.findings.is_empty()).count();
+            let needing: Vec<&&Row> = theirs.iter().filter(|row| !row.findings.is_empty()).collect();
             let _ = write!(
                 body,
                 "<tr class=\"{}\"><td><a href=\"/people/{}\">{}</a></td><td data-label=\"Machines\">",
-                if attention == 0 { "ok" } else { "attention" },
+                if needing.is_empty() { "ok" } else { "attention" },
                 url_encode(owner),
                 escape(owner),
             );
             for row in theirs {
+                let class = if row.findings.is_empty() { "" } else { "danger" };
+                body.push_str(&machine_pill(row, class));
+                body.push(' ');
+            }
+            body.push_str("</td><td data-label=\"Needs attention\">");
+            if needing.is_empty() {
+                body.push_str("<span class=\"chip pass\">nothing</span>");
+            }
+            for row in &needing {
+                let chips: Vec<String> = row.findings.iter().map(|finding| finding_chip(finding, true)).collect();
                 let _ = write!(
                     body,
-                    "<a href=\"/machines/{name}\"{}>{name}</a> ",
-                    if row.findings.is_empty() {
-                        ""
-                    } else {
-                        " class=\"danger\""
-                    },
+                    "<div class=\"needs\"><a href=\"/machines/{name}\">{name}</a> {}</div>",
+                    chips.join(" "),
                     name = escape(&row.machine.name),
                 );
             }
@@ -387,11 +576,9 @@ pub(super) fn render_people(web: &Web, viewer: &Viewer) -> Result<Option<String>
                 .max();
             let _ = write!(
                 body,
-                "</td><td class=\"number\" data-label=\"Needing attention\">{}</td>\
-                 <td class=\"time\" data-label=\"Last report\">{}</td></tr>",
-                count_chip(attention, "fail"),
+                "</td><td class=\"time\" data-label=\"Last report\">{}</td></tr>",
                 latest
-                    .map(|latest| ago(latest, now))
+                    .map(|latest| when(latest, now))
                     .unwrap_or_else(|| "never".to_string()),
             );
         }
@@ -401,23 +588,44 @@ pub(super) fn render_people(web: &Web, viewer: &Viewer) -> Result<Option<String>
     Ok(Some(page("People", "/people", &[], Some(viewer), &body)))
 }
 
-pub(super) fn render_person(web: &Web, viewer: &Viewer, owner: &str) -> Result<Option<String>, String> {
+/// Owners are matched whatever the case of their address: the reminders link them in lower case.
+pub(super) fn render_person(
+    web: &Web,
+    viewer: &Viewer,
+    owner: &str,
+    show: Option<&str>,
+) -> Result<Option<String>, String> {
     if !viewer.admin && !owner.eq_ignore_ascii_case(&viewer.email) {
         return Ok(None);
     }
     let machines = machines::read(&web.machines)?;
     let now = Timestamp::now();
-    let rows = rows(web, machines.iter().filter(|machine| machine.owner == owner), now);
+    let mut rows = rows(
+        web,
+        machines
+            .iter()
+            .filter(|machine| machine.owner.eq_ignore_ascii_case(owner)),
+        now,
+    );
     if rows.is_empty() {
         return Ok(None);
     }
+    // what only the admins can deal with, as in the reminders
+    if !viewer.admin {
+        for row in &mut rows {
+            row.findings.retain(Finding::for_owner);
+        }
+    }
+    // an owner reaches their machines at the root
+    let base = match viewer.admin {
+        true => format!("/people/{}", url_encode(owner)),
+        false => "/".to_string(),
+    };
     let mut body = String::new();
-    metrics(&mut body, &machine_cards(&rows));
-    section(&mut body, "machines", "Machines", MACHINES_INTRO);
-    machines_table(&mut body, &rows, now);
-    body.push_str("</section>");
+    metrics(&mut body, &machine_cards(&rows, &base));
+    machines_section(&mut body, &rows, show, &base, now, viewer.admin);
     section(&mut body, "checks", "Checks", CHECKS_INTRO);
-    checks_table(&mut body, &rows);
+    checks_table(&mut body, &rows, viewer.admin);
     body.push_str("</section>");
     Ok(Some(page(
         owner,
@@ -449,7 +657,7 @@ pub(super) fn render_types(web: &Web, viewer: &Viewer) -> Result<Option<String>,
             label: kind.plural(),
             value: count(kind),
             class: "all",
-            href: None,
+            href: Some(format!("/types/{}", kind.slug())),
         })
         .collect();
     metrics(&mut body, &cards);
@@ -457,7 +665,7 @@ pub(super) fn render_types(web: &Web, viewer: &Viewer) -> Result<Option<String>,
     body.push_str(
         "<div class=\"table\"><table><thead><tr><th>Type</th><th class=\"number\">Machines</th>\
          <th class=\"number\">Needing attention</th><th class=\"number\">Passing every check</th>\
-         <th class=\"number\">People</th></tr></thead><tbody>",
+         <th class=\"number\">People</th><th>Most failed checks</th></tr></thead><tbody>",
     );
     for kind in Kind::ALL {
         let of_kind: Vec<&Row> = rows.iter().filter(|row| row.kind == kind).collect();
@@ -465,15 +673,31 @@ pub(super) fn render_types(web: &Web, viewer: &Viewer) -> Result<Option<String>,
             continue;
         }
         let attention = of_kind.iter().filter(|row| !row.findings.is_empty()).count();
-        let mut people: Vec<&str> = of_kind.iter().map(|row| row.machine.owner.as_str()).collect();
+        let mut people: Vec<String> = of_kind
+            .iter()
+            .map(|row| row.machine.owner.to_ascii_lowercase())
+            .collect();
         people.sort_unstable();
         people.dedup();
+        let failed: Vec<String> = by_check(of_kind.iter().copied())
+            .into_iter()
+            .filter(|check| !check.fail.is_empty() || !check.unknown.is_empty())
+            .take(5)
+            .map(|check| {
+                format!(
+                    "<a class=\"chip fail\" href=\"/checks/{}\">{} · {}</a>",
+                    url_encode(check.name),
+                    escape(check.name),
+                    check.fail.len() + check.unknown.len()
+                )
+            })
+            .collect();
         let _ = write!(
             body,
             "<tr class=\"{}\"><td><a href=\"/types/{}\">{}</a></td><td class=\"number\" data-label=\"Machines\">{}</td>\
              <td class=\"number\" data-label=\"Needing attention\">{}</td>\
              <td class=\"number\" data-label=\"Passing every check\">{}</td>\
-             <td class=\"number\" data-label=\"People\">{}</td></tr>",
+             <td class=\"number\" data-label=\"People\">{}</td><td data-label=\"Most failed checks\">{}</td></tr>",
             if attention == 0 { "ok" } else { "attention" },
             kind.slug(),
             kind.plural(),
@@ -481,13 +705,19 @@ pub(super) fn render_types(web: &Web, viewer: &Viewer) -> Result<Option<String>,
             count_chip(attention, "fail"),
             of_kind.iter().filter(|row| row.passing()).count(),
             people.len(),
+            failed.join(" "),
         );
     }
     body.push_str("</tbody></table></div></section>");
     Ok(Some(page("Types", "/types", &[], Some(viewer), &body)))
 }
 
-pub(super) fn render_kind(web: &Web, viewer: &Viewer, slug: &str) -> Result<Option<String>, String> {
+pub(super) fn render_kind(
+    web: &Web,
+    viewer: &Viewer,
+    slug: &str,
+    show: Option<&str>,
+) -> Result<Option<String>, String> {
     if !viewer.admin {
         return Ok(None);
     }
@@ -501,11 +731,12 @@ pub(super) fn render_kind(web: &Web, viewer: &Viewer, slug: &str) -> Result<Opti
         .filter(|row| row.kind == kind)
         .collect();
 
-    let mut people: Vec<&str> = rows.iter().map(|row| row.machine.owner.as_str()).collect();
+    let mut people: Vec<String> = rows.iter().map(|row| row.machine.owner.to_ascii_lowercase()).collect();
     people.sort_unstable();
     people.dedup();
+    let base = format!("/types/{}", kind.slug());
     let mut body = String::new();
-    let mut cards = machine_cards(&rows);
+    let mut cards = machine_cards(&rows, &base);
     cards.push(Card {
         label: "People",
         value: people.len(),
@@ -513,21 +744,210 @@ pub(super) fn render_kind(web: &Web, viewer: &Viewer, slug: &str) -> Result<Opti
         href: None,
     });
     metrics(&mut body, &cards);
-    section(
-        &mut body,
-        "machines",
-        "Machines",
-        &format!("{MACHINES_INTRO} {KIND_INTRO}"),
-    );
-    machines_table(&mut body, &rows, now);
-    body.push_str("</section>");
+    let _ = write!(body, "<p class=\"lead\">{KIND_INTRO}</p>");
+    machines_section(&mut body, &rows, show, &base, now, true);
     section(&mut body, "checks", "Checks", CHECKS_INTRO);
-    checks_table(&mut body, &rows);
+    checks_table(&mut body, &rows, true);
     body.push_str("</section>");
     Ok(Some(page(
         kind.plural(),
         "/types",
         &[("machines", "Machines"), ("checks", "Checks")],
+        Some(viewer),
+        &body,
+    )))
+}
+
+pub(super) fn render_checks(web: &Web, viewer: &Viewer) -> Result<Option<String>, String> {
+    if !viewer.admin {
+        return Ok(None);
+    }
+    let machines = machines::read(&web.machines)?;
+    let now = Timestamp::now();
+    let rows = rows(web, machines.iter(), now);
+    let checks = by_check(&rows);
+    let failing = checks
+        .iter()
+        .filter(|check| !check.fail.is_empty() || !check.unknown.is_empty())
+        .count();
+    let mut body = String::new();
+    metrics(
+        &mut body,
+        &[
+            Card {
+                label: "Checks",
+                value: checks.len(),
+                class: "all",
+                href: None,
+            },
+            Card {
+                label: "Not passing somewhere",
+                value: failing,
+                class: if failing > 0 { "fail" } else { "pass" },
+                href: None,
+            },
+            Card {
+                label: "Machines reporting",
+                value: rows.iter().filter(|row| row.latest.is_some()).count(),
+                class: "all",
+                href: Some("/".to_string()),
+            },
+        ],
+    );
+    section(&mut body, "checks", "Checks", CHECKS_INTRO);
+    checks_table(&mut body, &rows, true);
+    body.push_str("</section>");
+    Ok(Some(page("Checks", "/checks", &[], Some(viewer), &body)))
+}
+
+/// One check across the machines: those not passing it, longest first, with what to do, then those passing it.
+pub(super) fn render_check(web: &Web, viewer: &Viewer, name: &str) -> Result<Option<String>, String> {
+    if !viewer.admin {
+        return Ok(None);
+    }
+    let machines = machines::read(&web.machines)?;
+    let now = Timestamp::now();
+    let rows = rows(web, machines.iter(), now);
+    let mut not_passing: Vec<(&Row, &Finding, bool)> = rows
+        .iter()
+        .filter_map(|row| row.not_passing(name).map(|(finding, due)| (row, finding, due)))
+        .collect();
+    let passing: Vec<&Row> = rows
+        .iter()
+        .filter(|row| {
+            row.latest.as_ref().is_some_and(|latest| {
+                latest
+                    .checks
+                    .iter()
+                    .any(|check| check.name == name && check.status == Status::Pass)
+            })
+        })
+        .collect();
+    let about = checks::about(name);
+    if not_passing.is_empty() && passing.is_empty() && about.is_none() {
+        return Ok(None);
+    }
+    let since = |finding: &Finding| match finding {
+        Finding::Check { since, .. } => Some(*since),
+        _ => None,
+    };
+    not_passing.sort_by_key(|(_, finding, due)| (!due, since(finding)));
+    let count = |due: bool, status: Status| {
+        not_passing
+            .iter()
+            .filter(|(_, finding, is_due)| {
+                *is_due == due && matches!(finding, Finding::Check { status: found, .. } if *found == status)
+            })
+            .count()
+    };
+    let within_grace = not_passing.iter().filter(|(_, _, due)| !due).count();
+
+    let mut body = String::new();
+    metrics(
+        &mut body,
+        &[
+            Card {
+                label: "Failing",
+                value: count(true, Status::Fail),
+                class: if count(true, Status::Fail) > 0 { "fail" } else { "pass" },
+                href: None,
+            },
+            Card {
+                label: "Could not run",
+                value: count(true, Status::Unknown),
+                class: if count(true, Status::Unknown) > 0 {
+                    "wait"
+                } else {
+                    "pass"
+                },
+                href: None,
+            },
+            Card {
+                label: "Within grace",
+                value: within_grace,
+                class: "all",
+                href: None,
+            },
+            Card {
+                label: "Passing",
+                value: passing.len(),
+                class: "pass",
+                href: None,
+            },
+        ],
+    );
+    let mut intro = match about {
+        Some(about) => format!("Passes when {about}."),
+        None => "Not a check this version of the collector knows.".to_string(),
+    };
+    if let Some(remedy) = review::remedy(name) {
+        let _ = write!(
+            intro,
+            " To do on a machine that does not pass it: <em>{}</em>.",
+            escape(remedy)
+        );
+    }
+    section(&mut body, "not-passing", "Not passing", &intro);
+    if not_passing.is_empty() {
+        body.push_str("<p class=\"empty\">None.</p>");
+    } else {
+        body.push_str("<div class=\"table\"><table><thead><tr><th>Machine</th><th>State</th></tr></thead><tbody>");
+        for (row, finding, due) in &not_passing {
+            // the name of the check is the page: the state takes its place
+            let (class, state) = match (due, finding) {
+                (false, _) => ("grace", "within grace"),
+                (
+                    true,
+                    Finding::Check {
+                        status: Status::Unknown,
+                        ..
+                    },
+                ) => ("unknown", "could not run"),
+                (true, _) => ("fail", "failing"),
+            };
+            let (since, detail) = match finding {
+                Finding::Check { since, detail, .. } => (
+                    format!(
+                        "<span class=\"since\" title=\"since {} UTC\">for {}</span>",
+                        minutes(*since),
+                        for_how_long(*since, now)
+                    ),
+                    escape(detail),
+                ),
+                _ => (String::new(), String::new()),
+            };
+            let _ = write!(
+                body,
+                "<tr class=\"{}\"><td><a href=\"/machines/{name}\">{name}</a><a class=\"owner\" href=\"/people/{}\">{}</a>\
+                 </td><td data-label=\"State\"><ul class=\"findings\"><li><span class=\"chip {class}\">{state}</span> \
+                 {since} <span class=\"detail\">{detail}</span></li></ul></td></tr>",
+                if *due { "attention" } else { "ok" },
+                url_encode(&row.machine.owner),
+                escape(&row.machine.owner),
+                name = escape(&row.machine.name),
+            );
+        }
+        body.push_str("</tbody></table></div>");
+    }
+    body.push_str("</section>");
+    section(
+        &mut body,
+        "passing",
+        "Passing",
+        "The machines whose latest report passes it.",
+    );
+    match passing.is_empty() {
+        true => body.push_str("<p class=\"empty\">None.</p>"),
+        false => {
+            let pills: Vec<String> = passing.iter().map(|row| machine_pill(row, "")).collect();
+            let _ = write!(body, "<p class=\"pills\">{}</p>", pills.join(" "));
+        }
+    }
+    body.push_str("</section>");
+    Ok(Some(page(
+        name,
+        "/checks",
+        &[("not-passing", "Not passing"), ("passing", "Passing")],
         Some(viewer),
         &body,
     )))
@@ -543,7 +963,15 @@ pub(super) fn render_machine(web: &Web, viewer: &Viewer, name: &str) -> Result<O
         return Ok(None);
     };
     let now = Timestamp::now();
-    let (reports, findings) = review::reviewed(&web.reports, machine, now);
+    let review::Reviewed {
+        reports,
+        mut findings,
+        within_grace,
+    } = review::reviewed(&web.reports, machine, now);
+    // what only the admins can deal with, as in the reminders
+    if !viewer.admin {
+        findings.retain(Finding::for_owner);
+    }
     let kind = Kind::of(reports.first());
 
     let mut body = String::new();
@@ -561,16 +989,23 @@ pub(super) fn render_machine(web: &Web, viewer: &Viewer, name: &str) -> Result<O
     if findings.is_empty() {
         body.push_str("<p class=\"verdict pass\">Nothing needs attention.</p>");
     } else {
-        body.push_str("<div class=\"verdict fail\">Needs attention");
-        attention(&mut body, &findings);
-        body.push_str("</div>");
+        body.push_str("<div class=\"verdict fail\">Needs attention<ul class=\"findings\">");
+        for finding in &findings {
+            let _ = write!(
+                body,
+                "<li>{}{}</li>",
+                finding_html(finding, now, viewer.admin, true),
+                remedy_html(finding.remedy())
+            );
+        }
+        body.push_str("</ul></div>");
     }
 
     section(
         &mut body,
         "latest",
         "Latest report",
-        "Every check of the latest report, with what the agent found.",
+        "Every check of the latest report, those not passing first, with what the agent found and what to do.",
     );
     match reports.first() {
         None => body.push_str("<p class=\"empty\">No reports.</p>"),
@@ -593,22 +1028,59 @@ pub(super) fn render_machine(web: &Web, viewer: &Viewer, name: &str) -> Result<O
                 kind.slug(),
             );
             body.push_str(
-                "<div class=\"table\"><table><thead><tr><th>Check</th><th>Outcome</th><th>Detail</th></tr></thead>\
-                 <tbody>",
+                "<div class=\"table\"><table><thead><tr><th>Check</th><th>Outcome</th><th>Since</th><th>Detail</th>\
+                 </tr></thead><tbody>",
             );
-            for check in &latest.checks {
+            let mut checks: Vec<_> = latest.checks.iter().collect();
+            checks.sort_by_key(|check| check.status == Status::Pass);
+            for check in checks {
+                let not_passing = not_passing(&findings, &within_grace, &check.name);
+                let (outcome, since, remedy) = match (check.status, not_passing) {
+                    (Status::Pass, _) => ("pass", String::new(), String::new()),
+                    (status, Some((finding, due))) => {
+                        let outcome = match (due, status) {
+                            (false, _) => "within grace",
+                            (true, Status::Unknown) => "could not run",
+                            (true, _) => "fail",
+                        };
+                        let since = match finding {
+                            Finding::Check { since, .. } => format!(
+                                "<span title=\"since {} UTC\">for {}</span>",
+                                minutes(*since),
+                                for_how_long(*since, now)
+                            ),
+                            _ => String::new(),
+                        };
+                        (outcome, since, remedy_html(finding.remedy()))
+                    }
+                    (Status::Unknown, None) => ("could not run", String::new(), String::new()),
+                    (_, None) => ("fail", String::new(), String::new()),
+                };
+                let class = match outcome {
+                    "pass" => "pass",
+                    "within grace" => "grace",
+                    "could not run" => "unknown",
+                    _ => "fail",
+                };
                 let _ = write!(
                     body,
-                    "<tr class=\"{}\"><td>{}</td><td data-label=\"Outcome\"><span class=\"chip {status}\">{status}</span>\
-                     </td><td class=\"detail\" data-label=\"Detail\">{}</td></tr>",
+                    "<tr class=\"{}\"><td>{}</td><td data-label=\"Outcome\"><span class=\"chip {class}\">{outcome}</span>\
+                     </td><td class=\"time\" data-label=\"Since\">{since}</td>\
+                     <td class=\"detail\" data-label=\"Detail\">{}{remedy}</td></tr>",
                     if check.status == Status::Pass {
-                        "ok"
+                        "ok passed"
                     } else {
                         "attention"
                     },
-                    escape(&check.name),
+                    match viewer.admin {
+                        true => format!(
+                            "<a class=\"check\" href=\"/checks/{}\">{}</a>",
+                            url_encode(&check.name),
+                            escape(&check.name)
+                        ),
+                        false => escape(&check.name),
+                    },
                     escape(&check.detail),
-                    status = status_class(check.status),
                 );
             }
             body.push_str("</tbody></table></div>");
@@ -672,7 +1144,7 @@ pub(super) fn render_machine(web: &Web, viewer: &Viewer, name: &str) -> Result<O
             "<div class=\"table\"><table><thead><tr><th>From</th><th>To</th><th class=\"number\">Reports</th>\
              <th>Not passing</th></tr></thead><tbody>",
         );
-        let state = |report: &Report| not_passing(report.checks.iter().map(|check| (&check.name, check.status)));
+        let state = |report: &Report| not_passing_chips(report.checks.iter().map(|check| (&check.name, check.status)));
         let mut runs: Vec<(Timestamp, Timestamp, usize, String)> = Vec::new();
         for report in &reports {
             let current = state(report);
@@ -720,7 +1192,7 @@ pub(super) fn render_machine(web: &Web, viewer: &Viewer, name: &str) -> Result<O
                 body,
                 "<tr><td class=\"time\">{}</td><td data-label=\"Not passing\">{}</td></tr>",
                 summary.date,
-                not_passing(summary.checks.iter().map(|(name, status)| (name, *status)))
+                not_passing_chips(summary.checks.iter().map(|(name, status)| (name, *status)))
             );
         }
         body.push_str("</tbody></table></div>");
@@ -854,7 +1326,7 @@ fn minutes(at: Timestamp) -> String {
     at.strftime("%Y-%m-%d %H:%M").to_string()
 }
 
-fn not_passing<'a>(checks: impl Iterator<Item = (&'a String, Status)>) -> String {
+fn not_passing_chips<'a>(checks: impl Iterator<Item = (&'a String, Status)>) -> String {
     let failing: Vec<String> = checks
         .filter(|(_, status)| *status != Status::Pass)
         .map(|(name, status)| format!("<span class=\"chip {}\">{}</span>", status_class(status), escape(name)))
@@ -874,14 +1346,30 @@ fn status_class(status: Status) -> &'static str {
     }
 }
 
-fn ago(then: Timestamp, now: Timestamp) -> String {
-    let minutes = now.duration_since(then).as_secs() / 60;
+fn for_how_long(since: Timestamp, now: Timestamp) -> String {
+    let minutes = now.duration_since(since).as_secs().max(0) / 60;
     match minutes {
-        ..1 => "just now".to_string(),
-        1..60 => format!("{minutes} min ago"),
-        60..2880 => format!("{} h ago", minutes / 60),
-        _ => format!("{} days ago", minutes / 1440),
+        ..1 => "less than a minute".to_string(),
+        1..60 => format!("{minutes} min"),
+        60..2880 => format!("{} h", minutes / 60),
+        _ => format!("{} days", minutes / 1440),
     }
+}
+
+fn ago(then: Timestamp, now: Timestamp) -> String {
+    match now.duration_since(then).as_secs() < 60 {
+        true => "just now".to_string(),
+        false => format!("{} ago", for_how_long(then, now)),
+    }
+}
+
+/// How long ago, with the time itself on hover.
+fn when(at: Timestamp, now: Timestamp) -> String {
+    format!(
+        "<time datetime=\"{at}\" title=\"{} UTC\">{}</time>",
+        minutes(at),
+        ago(at, now)
+    )
 }
 
 pub(crate) fn escape(text: &str) -> String {
@@ -912,7 +1400,12 @@ pub(super) fn page(title: &str, view: &str, sections: &[(&str, &str)], viewer: O
     if let Some(viewer) = viewer {
         html.push_str("<nav class=\"views\">");
         let views: &[(&str, &str)] = match viewer.admin {
-            true => &[("/", "Machines"), ("/people", "People"), ("/types", "Types")],
+            true => &[
+                ("/", "Machines"),
+                ("/people", "People"),
+                ("/types", "Types"),
+                ("/checks", "Checks"),
+            ],
             false => &[("/", "Machines")],
         };
         for &(href, label) in views {
@@ -1004,7 +1497,7 @@ mod tests {
         let web = web(&dir, "");
         machines::record_pending(&web.reports, &"0".repeat(64), "<script>alert(1)</script>", "id").unwrap();
 
-        let page = render_overview(&web, &admin()).unwrap().unwrap();
+        let page = render_overview(&web, &admin(), None).unwrap().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(!page.contains("<script>"));
@@ -1032,15 +1525,36 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        let mario = render_person(&web, &admin(), "mario.rossi@optionfactory.net").unwrap();
-        let laptops = render_kind(&web, &admin(), "laptop").unwrap();
-        let workstations = render_kind(&web, &admin(), "workstation").unwrap();
-        let nobody = render_person(&web, &admin(), "nobody@optionfactory.net").unwrap();
+        let mario = render_person(&web, &admin(), "Mario.Rossi@optionfactory.net", None).unwrap();
+        let laptops = render_kind(&web, &admin(), "laptop", None).unwrap();
+        let workstations = render_kind(&web, &admin(), "workstation", None).unwrap();
+        let nobody = render_person(&web, &admin(), "nobody@optionfactory.net", None).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(machines_on(mario), ["kup", "box"]);
         assert_eq!(machines_on(laptops), ["kup", "lap"]);
         assert_eq!(machines_on(workstations), ["box"]);
         assert!(nobody.is_none());
+    }
+
+    #[test]
+    fn a_check_page_lists_the_machines_not_passing_it_then_those_passing() {
+        let dir = std::env::temp_dir().join(format!("optionfactory-posture-web-check-{}", std::process::id()));
+        let hash = "0".repeat(64);
+        let web = web(
+            &dir,
+            &format!("kup mario.rossi@optionfactory.net {hash}\nlap luigi.verdi@optionfactory.net {hash}\n"),
+        );
+        write_report(&web, "kup", Some(10), Status::Fail);
+        write_report(&web, "lap", Some(9), Status::Pass);
+
+        let page = render_check(&web, &admin(), "firewall").unwrap().unwrap();
+        let unknown = render_check(&web, &admin(), "<b>nope</b>").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let (not_passing, passing) = page.split_once("id=\"passing\"").unwrap();
+        // failing for a moment only: shown, but within its grace
+        assert!(not_passing.contains("href=\"/machines/kup\"") && not_passing.contains("within grace"));
+        assert!(passing.contains("href=\"/machines/lap\"") && !passing.contains("kup"));
+        assert!(unknown.is_none());
     }
 
     #[test]
@@ -1058,19 +1572,21 @@ mod tests {
             admin: false,
         };
 
-        let overview = render_overview(&web, &mario).unwrap().unwrap();
+        let overview = render_overview(&web, &mario, None).unwrap().unwrap();
         let own = render_machine(&web, &mario, "kup").unwrap();
         let others = [
             render_machine(&web, &mario, "lap").unwrap(),
-            render_person(&web, &mario, "luigi.verdi@optionfactory.net").unwrap(),
+            render_person(&web, &mario, "luigi.verdi@optionfactory.net", None).unwrap(),
             render_people(&web, &mario).unwrap(),
             render_types(&web, &mario).unwrap(),
-            render_kind(&web, &mario, "laptop").unwrap(),
+            render_kind(&web, &mario, "laptop", None).unwrap(),
+            render_checks(&web, &mario).unwrap(),
+            render_check(&web, &mario, "firewall").unwrap(),
         ];
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(overview.contains("href=\"/machines/kup\""));
         assert!(!overview.contains("href=\"/machines/lap\""));
-        assert!(!overview.contains("href=\"/people\""));
+        assert!(!overview.contains("href=\"/people\"") && !overview.contains("href=\"/checks"));
         assert!(own.is_some_and(|page| !page.contains("href=\"/types/")));
         assert!(others.iter().all(Option::is_none));
     }

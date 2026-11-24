@@ -1,5 +1,9 @@
 # optionfactory-posture
 
+**Posture measures the machine, not the work done on it.** It checks how the machine is set up (the disk encrypted, the
+firewall on, the updates installed, the screen locking) and never what anyone does with it: no files, documents, sites,
+applications or messages. The only trace of use is that each report shows the machine was on at that hour.
+
 Security posture of optionfactory's developer workstations, for ISO/IEC 27001. One static binary with six commands:
 
 - `report`, on every workstation (hourly systemd timer, as root): runs the checks, queues the report and sends the
@@ -132,14 +136,19 @@ longer.
 With a `[login]` section, a Google OAuth client whose redirect URIs include `<public_url>/oidc/callback`, the collector
 also serves:
 
-- `/`: every machine of the list with its owner, its type, the time of its latest report, the checks not passing and
-  what the review would report; how many machines pass or fail each check; the pending machines with the full hash of
-  their token;
-- `/people` and `/people/<owner>`: the owners with their machines, and the machines of one owner;
+- `/`: every machine of the list with its owner, its type, the time of its latest report and one line per finding (the
+  check, for how long, its detail), then the checks still within their grace; for each check, how many machines pass,
+  fail or cannot run it and which do not pass; the pending machines with the full hash of their token. The summary
+  cards lead to the machines they count (`?show=attention`, `?show=passing`);
+- `/people` and `/people/<owner>`: the owners with their machines and what needs attention on each, and the machines of
+  one owner;
 - `/types` and `/types/<laptop|workstation|unknown>`: the machines by type, from the SMBIOS chassis type of their latest
-  report (`unknown`: no report, an agent that does not send it yet, or a chassis that is neither, such as a virtual machine);
-- `/machines/<name>`: the latest report in full with the hardware, the reports of the last thirty days and the daily
-  summaries.
+  report (`unknown`: no report, an agent that does not send it yet, or a chassis that is neither, such as a virtual
+  machine), with the checks most failed on each type;
+- `/checks` and `/checks/<name>`: every check with what it verifies and the machines not passing it; for one check, those
+  machines with how long and why, longest first, what to do, and the machines passing it;
+- `/machines/<name>`: what needs attention and what to do, the latest report in full (the checks not passing first),
+  the hardware, the listening ports, the reports of the last thirty days and the daily summaries.
 
 The emails in `admins` (one per line, read again at every request) read every page. The owners of the machines on the
 list read only `/` and `/people/<owner>`, both with their own machines, and `/machines/<name>` of those machines; the

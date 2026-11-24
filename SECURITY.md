@@ -21,7 +21,8 @@ Within that scope it keeps its exposure small:
   `dconf read`, `docker ps`, `apt-config dump`, `timedatectl show`, `ip -json link`, `nvidia-smi` when there is an NVIDIA card) are executed directly with fixed arguments, never through a shell, with `LC_ALL=C`.
 - **Nothing listens**: the agent opens no port and accepts no input from the network; it only sends. Nothing on the
   collector can command a machine.
-- **The machine, not the person**: a report holds the hostname, the machine id, the system, the kernel, the
+- **The machine, not the work done on it**: the agent checks how the machine is set up, never what anyone does with
+  it. A report holds the hostname, the machine id, the system, the kernel, the
   chassis type (laptop or desktop), the hardware (models, sizes, firmware and microcode versions, the CPU flaws the
   kernel reports, the MAC addresses of the network cards; no serial numbers), the TCP ports listening on the network (address and
   port, never the process) and the outcome of each check. No files, sites, applications, sessions or VPN state; `docker-ports` reports only the

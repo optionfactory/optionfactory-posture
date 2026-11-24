@@ -4,8 +4,8 @@ use crate::web::pages::escape;
 use crate::web::url_encode;
 use jiff::{SignedDuration, Timestamp};
 use std::collections::BTreeMap;
-use std::fmt::Write;
-use std::path::Path;
+use std::fmt::{self, Write};
+use std::path::{Path, PathBuf};
 
 /// Laptops off the VPN, on holiday or switched off keep their reports queued: a week of silence is the limit.
 const LONGEST_SILENCE: SignedDuration = SignedDuration::from_hours(7 * 24);
@@ -21,6 +21,94 @@ fn grace(check: &str) -> SignedDuration {
         "clock-sync" => SignedDuration::from_hours(24),
         _ => SignedDuration::from_hours(4),
     }
+}
+
+/// What needs attention about a machine. Displayed, the lines of the review and of the mails.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Finding {
+    /// A check not passing in the latest report since `since`; `Status::Unknown` when it could not run.
+    Check {
+        name: String,
+        status: Status,
+        since: Timestamp,
+        detail: String,
+    },
+    /// No report since then: the newest one, or the day of the newest summary once the reports are gone.
+    Silent {
+        since: Timestamp,
+    },
+    Never,
+    /// A report stamped more than an hour ahead: a clock that far ahead hides the reports that follow.
+    Future {
+        at: Timestamp,
+    },
+    Unreadable {
+        path: PathBuf,
+        error: String,
+    },
+}
+
+impl fmt::Display for Finding {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Finding::Check {
+                name,
+                status: Status::Unknown,
+                since,
+                detail,
+            } => write!(f, "{name} could not run since {since}: {detail}"),
+            Finding::Check {
+                name, since, detail, ..
+            } => write!(f, "{name} failing since {since}: {detail}"),
+            Finding::Silent { since } => write!(f, "no report since {since}"),
+            Finding::Never => write!(f, "never reported"),
+            Finding::Future { at } => write!(f, "report from the future: {at}"),
+            Finding::Unreadable { path, error } => write!(f, "unreadable report {}: {error}", path.display()),
+        }
+    }
+}
+
+impl Finding {
+    /// What the owner of the machine can do about it.
+    pub fn remedy(&self) -> Option<&'static str> {
+        match self {
+            Finding::Check {
+                status: Status::Unknown,
+                ..
+            } => Some("the check could not run: ask IT"),
+            Finding::Check { name, .. } => remedy(name),
+            Finding::Silent { .. } | Finding::Never => {
+                Some("switch the machine on and connect it to the network; if it is on, ask IT")
+            }
+            Finding::Future { .. } => Some("sudo timedatectl set-ntp true"),
+            Finding::Unreadable { .. } => None,
+        }
+    }
+
+    /// Whether the owner can act on it: an unreadable report is a matter for the admins.
+    pub fn for_owner(&self) -> bool {
+        !matches!(self, Finding::Unreadable { .. })
+    }
+}
+
+/// What the owner of a machine can do about a failing check, in the words of the table of the checks in internal-infra
+/// (`docs/posture.md`); what needs IT says so.
+pub fn remedy(check: &str) -> Option<&'static str> {
+    Some(match check {
+        "disk-encryption" => "ask IT: the machine needs encrypting",
+        "disk-recovery-keyslot" | "disk-tang" | "apparmor" => "ask IT",
+        "os" => "upgrade the system, with IT",
+        "reboot-pending" => "reboot",
+        "security-updates" | "baseline" => "sudo apt update && sudo apt full-upgrade",
+        "automatic-updates" | "journal" | "screen-lock" => "reinstall the baseline",
+        "firewall" => "sudo ufw enable",
+        "docker-ports" => "publish the container ports on 127.0.0.1 only",
+        "sshd" => "undo your changes to /etc/ssh/sshd_config",
+        "empty-passwords" => "sudo passwd <user>",
+        "clock-sync" => "sudo timedatectl set-ntp true",
+        "auto-login" => "turn off automatic login in the login settings",
+        _ => return None,
+    })
 }
 
 /// The reports of a machine are in `<reports>/<name>/`, the directory the collector chose from the token the report
@@ -51,7 +139,7 @@ pub fn review(
 /// What needs attention: the machines with findings, and the machines waiting for approval. Read once, then narrowed
 /// to each owner for their reminder.
 pub struct Review<'a> {
-    attention: Vec<(&'a Machine, Vec<String>)>,
+    attention: Vec<(&'a Machine, Vec<Finding>)>,
     pending: Vec<(String, Pending, Timestamp)>,
     /// The person a reminder is for; `None` for the review of the admins.
     owner: Option<String>,
@@ -63,7 +151,7 @@ impl<'a> Review<'a> {
         Ok(Review {
             attention: machines
                 .iter()
-                .map(|machine| (machine, reviewed(reports, machine, now).1))
+                .map(|machine| (machine, reviewed(reports, machine, now).findings))
                 .filter(|(_, findings)| !findings.is_empty())
                 .collect(),
             pending: machines::pending(reports, machines)?,
@@ -81,11 +169,8 @@ impl<'a> Review<'a> {
                 .iter()
                 .filter(|(machine, _)| machine.owner.eq_ignore_ascii_case(owner))
                 .map(|(machine, findings)| {
-                    let findings: Vec<String> = findings
-                        .iter()
-                        .filter(|finding| !finding.starts_with("unreadable report"))
-                        .cloned()
-                        .collect();
+                    let findings: Vec<Finding> =
+                        findings.iter().filter(|finding| finding.for_owner()).cloned().collect();
                     (*machine, findings)
                 })
                 .filter(|(_, findings)| !findings.is_empty())
@@ -125,7 +210,7 @@ impl<'a> Review<'a> {
                 match &self.owner {
                     Some(_) => {
                         let _ = writeln!(text, "{}: {finding}", machine.name);
-                        if let Some(remedy) = remedy(finding) {
+                        if let Some(remedy) = finding.remedy() {
                             let _ = writeln!(text, "  to do: {remedy}");
                         }
                     }
@@ -163,35 +248,6 @@ const BORDER: &str = "#cbd5e1";
 const PRIMARY: &str = "#0369a1";
 const DANGER: &str = "#b91c1c";
 const WARNING: &str = "#b45309";
-
-/// What the owner of a machine can do about a finding, in the words of the table of the checks in internal-infra
-/// (`docs/posture.md`); what needs IT says so.
-fn remedy(finding: &str) -> Option<&'static str> {
-    if finding.contains(" could not run since ") {
-        return Some("the check could not run: ask IT");
-    }
-    let check = finding.split_once(" failing since ").map(|(check, _)| check);
-    Some(match check {
-        Some("disk-encryption") => "ask IT: the machine needs encrypting",
-        Some("disk-recovery-keyslot" | "disk-tang" | "apparmor") => "ask IT",
-        Some("os") => "upgrade the system, with IT",
-        Some("reboot-pending") => "reboot",
-        Some("security-updates" | "baseline") => "sudo apt update && sudo apt full-upgrade",
-        Some("automatic-updates" | "journal" | "screen-lock") => "reinstall the baseline",
-        Some("firewall") => "sudo ufw enable",
-        Some("docker-ports") => "publish the container ports on 127.0.0.1 only",
-        Some("sshd") => "undo your changes to /etc/ssh/sshd_config",
-        Some("empty-passwords") => "sudo passwd <user>",
-        Some("clock-sync") => "sudo timedatectl set-ntp true",
-        Some("auto-login") => "turn off automatic login in the login settings",
-        Some(_) => return None,
-        None if finding.starts_with("no report since") || finding == "never reported" => {
-            "switch the machine on and connect it to the network; if it is on, ask IT"
-        }
-        None if finding.starts_with("report from the future") => "sudo timedatectl set-ntp true",
-        None => return None,
-    })
-}
 
 impl Review<'_> {
     /// Tables and inline styles, the light palette of the pages: mail clients drop stylesheets and most of CSS.
@@ -255,14 +311,14 @@ impl Review<'_> {
                 }
             );
             for finding in findings {
-                let remedy = match (owner, remedy(finding)) {
+                let remedy = match (owner, finding.remedy()) {
                     (Some(_), Some(remedy)) => format!(
                         "<div style=\"margin:2px 0 6px;font-size:13px;color:{MUTED};\">To do: {}</div>",
                         escape(remedy)
                     ),
                     _ => String::new(),
                 };
-                let _ = writeln!(html, "<li>{}{remedy}</li>", escape(finding));
+                let _ = writeln!(html, "<li>{}{remedy}</li>", escape(&finding.to_string()));
             }
             html.push_str("</ul></td></tr></table></td></tr>\n");
         }
@@ -314,8 +370,17 @@ impl Review<'_> {
     }
 }
 
-/// The reports of a machine, newest first, and what needs attention about it.
-pub fn reviewed(reports: &Path, machine: &Machine, now: Timestamp) -> (Vec<Report>, Vec<String>) {
+/// A machine as the review sees it.
+pub struct Reviewed {
+    /// Newest first.
+    pub reports: Vec<Report>,
+    pub findings: Vec<Finding>,
+    /// Checks not passing in the latest report, still within their grace: not findings yet.
+    pub within_grace: Vec<Finding>,
+}
+
+/// The reports of a machine and what needs attention about it.
+pub fn reviewed(reports: &Path, machine: &Machine, now: Timestamp) -> Reviewed {
     let dir = reports.join(&machine.name);
     let mut names: Vec<_> = std::fs::read_dir(&dir)
         .into_iter()
@@ -339,15 +404,15 @@ pub fn reviewed(reports: &Path, machine: &Machine, now: Timestamp) -> (Vec<Repor
             let report = std::fs::read(&path).map_err(|e| e.to_string());
             match report.and_then(|bytes| serde_json::from_slice::<Report>(&bytes).map_err(|e| e.to_string())) {
                 Ok(report) => Some(report),
-                Err(e) => {
-                    unreadable.push(format!("unreadable report {}: {e}", path.display()));
+                Err(error) => {
+                    unreadable.push(Finding::Unreadable { path, error });
                     None
                 }
             }
         })
         .collect();
-    let mut lines = findings(newest_first.iter(), now);
-    lines.extend(unreadable);
+    let (mut findings, within_grace) = findings(newest_first.iter(), now);
+    findings.extend(unreadable);
     // reports go after thirty days, summaries after a year: a machine silent that long is told by its summaries
     let latest_summary = std::fs::read_dir(dir.join("daily"))
         .into_iter()
@@ -356,26 +421,37 @@ pub fn reviewed(reports: &Path, machine: &Machine, now: Timestamp) -> (Vec<Repor
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.ends_with(".json") && !name.starts_with('.'))
         .max();
-    match (has_reports, latest_summary) {
+    // summaries are named after their day, `YYYYmmdd.json`
+    let summarized = latest_summary
+        .and_then(|day| jiff::civil::Date::strptime("%Y%m%d", day.trim_end_matches(".json")).ok())
+        .and_then(|day| day.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok())
+        .map(|day| day.timestamp());
+    match (has_reports, summarized) {
         (true, _) => {}
-        (false, Some(day)) => lines.push(format!("no report since {}", day.trim_end_matches(".json"))),
-        (false, None) => lines.push("never reported".to_string()),
+        (false, Some(since)) => findings.push(Finding::Silent { since }),
+        (false, None) => findings.push(Finding::Never),
     }
-    (newest_first, lines)
+    Reviewed {
+        reports: newest_first,
+        findings,
+        within_grace,
+    }
 }
 
-/// Reads back only as far as needed to find when each failing check last passed.
-fn findings<'a>(mut newest_first: impl Iterator<Item = &'a Report>, now: Timestamp) -> Vec<String> {
+/// The findings, and the checks still within their grace. Reads back only as far as needed to find when each failing
+/// check last passed.
+fn findings<'a>(mut newest_first: impl Iterator<Item = &'a Report>, now: Timestamp) -> (Vec<Finding>, Vec<Finding>) {
     let Some(latest) = newest_first.next() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let mut findings = Vec::new();
+    let mut within_grace = Vec::new();
     // a clock far ahead keeps this report the newest, hiding the ones that follow
     if latest.taken_at.duration_since(now) > SignedDuration::from_hours(1) {
-        findings.push(format!("report from the future: {}", latest.taken_at));
+        findings.push(Finding::Future { at: latest.taken_at });
     }
     if now.duration_since(latest.taken_at) > LONGEST_SILENCE {
-        findings.push(format!("no report since {}", latest.taken_at));
+        findings.push(Finding::Silent { since: latest.taken_at });
     }
     let mut failing: BTreeMap<String, (Timestamp, String, Status)> = latest
         .checks
@@ -405,16 +481,20 @@ fn findings<'a>(mut newest_first: impl Iterator<Item = &'a Report>, now: Timesta
         });
     }
     for (name, (since, detail, status)) in failing {
-        if now.duration_since(since) >= grace(&name) {
-            // as the latest report has it: a check that could not run needs the admins, not the owner
-            let state = match status {
-                Status::Unknown => "could not run",
-                _ => "failing",
-            };
-            findings.push(format!("{name} {state} since {since}: {detail}"));
+        let due = now.duration_since(since) >= grace(&name);
+        // the status as the latest report has it: a check that could not run needs IT, not the owner
+        let finding = Finding::Check {
+            name,
+            status,
+            since,
+            detail,
+        };
+        match due {
+            true => findings.push(finding),
+            false => within_grace.push(finding),
         }
     }
-    findings
+    (findings, within_grace)
 }
 
 #[cfg(test)]
@@ -451,7 +531,12 @@ mod tests {
         let review = Review {
             attention: vec![(
                 &machines[0],
-                vec!["firewall failing since 2026-11-19T10:00:00Z: <b>off</b>".to_string()],
+                vec![Finding::Check {
+                    name: "firewall".to_string(),
+                    status: Status::Fail,
+                    since: "2026-11-19T10:00:00Z".parse().unwrap(),
+                    detail: "<b>off</b>".to_string(),
+                }],
             )],
             pending: vec![("b".repeat(64), pending, "2026-11-19T11:00:00Z".parse().unwrap())],
             owner: None,
@@ -479,11 +564,19 @@ mod tests {
                 (
                     &machines[0],
                     vec![
-                        "firewall failing since 2026-11-19T10:00:00Z: inactive".to_string(),
-                        "unreadable report /reports/kup/x.json: eof".to_string(),
+                        Finding::Check {
+                            name: "firewall".to_string(),
+                            status: Status::Fail,
+                            since: "2026-11-19T10:00:00Z".parse().unwrap(),
+                            detail: "inactive".to_string(),
+                        },
+                        Finding::Unreadable {
+                            path: PathBuf::from("/reports/kup/x.json"),
+                            error: "eof".to_string(),
+                        },
                     ],
                 ),
-                (&machines[1], vec!["never reported".to_string()]),
+                (&machines[1], vec![Finding::Never]),
             ],
             pending: vec![("b".repeat(64), pending, "2026-11-19T11:00:00Z".parse().unwrap())],
             owner: None,
@@ -518,24 +611,29 @@ mod tests {
                 report("2026-10-26T09:00:00Z", Status::Pass),
             ]
         };
+        let text = |findings: Vec<Finding>| findings.iter().map(Finding::to_string).collect::<Vec<_>>();
+        let (due, within_grace) = findings(newest_first().iter(), now);
+        assert_eq!(text(due), ["firewall failing since 2026-10-26T10:00:00Z: inactive"]);
+        assert!(within_grace.is_empty());
+        let (due, within_grace) = findings(newest_first().iter().take(2), now);
+        assert!(due.is_empty());
         assert_eq!(
-            findings(newest_first().iter(), now),
-            ["firewall failing since 2026-10-26T10:00:00Z: inactive"]
+            text(within_grace),
+            ["firewall failing since 2026-10-26T11:00:00Z: inactive"]
         );
-        assert!(findings(newest_first().iter().take(2), now).is_empty());
     }
 
     #[test]
     fn a_silent_machine_is_reported() {
         let now: Timestamp = "2026-11-10T00:00:00Z".parse().unwrap();
-        let findings = findings([report("2026-11-01T00:00:00Z", Status::Pass)].iter(), now);
-        assert_eq!(findings, ["no report since 2026-11-01T00:00:00Z"]);
+        let (findings, _) = findings([report("2026-11-01T00:00:00Z", Status::Pass)].iter(), now);
+        assert_eq!(findings[0].to_string(), "no report since 2026-11-01T00:00:00Z");
     }
 
     #[test]
     fn a_report_from_the_future_is_reported() {
         let now: Timestamp = "2026-10-26T12:00:00Z".parse().unwrap();
-        let findings = findings([report("2026-10-27T12:00:00Z", Status::Pass)].iter(), now);
-        assert_eq!(findings, ["report from the future: 2026-10-27T12:00:00Z"]);
+        let (findings, _) = findings([report("2026-10-27T12:00:00Z", Status::Pass)].iter(), now);
+        assert_eq!(findings[0].to_string(), "report from the future: 2026-10-27T12:00:00Z");
     }
 }
