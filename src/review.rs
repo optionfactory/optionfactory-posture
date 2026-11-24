@@ -52,7 +52,12 @@ pub enum Finding {
 /// send the terminal escape sequences.
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let line = |text: &str| -> String { text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect() };
+        // also the line separators and the direction marks, which would move or hide the rest of the line
+        let invisible = |c: char| {
+            c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        };
+        let line = |text: &str| -> String { text.chars().map(|c| if invisible(c) { ' ' } else { c }).collect() };
         match self {
             Finding::Check {
                 name,
@@ -635,9 +640,10 @@ mod tests {
             name: "firewall".to_string(),
             status: Status::Fail,
             since: "2026-11-19T10:00:00Z".parse().unwrap(),
-            detail: "inactive\nlap (luigi.verdi@optionfactory.net): disk-encryption failing\x1b[2J".to_string(),
+            detail: "inactive\nlap (luigi.verdi@optionfactory.net): disk-encryption failing\x1b[2J\u{2028}\u{202e}"
+                .to_string(),
         };
-        assert!(!finding.to_string().contains(['\n', '\x1b']));
+        assert!(!finding.to_string().contains(['\n', '\x1b', '\u{2028}', '\u{202e}']));
     }
 
     #[test]

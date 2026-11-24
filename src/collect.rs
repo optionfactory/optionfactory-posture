@@ -229,7 +229,7 @@ fn destination(
     body: &[u8],
     now: Timestamp,
 ) -> Result<(PathBuf, Vec<u8>, Timestamp), (StatusCode, String)> {
-    let report: Report = serde_json::from_slice(body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mut report: Report = serde_json::from_slice(body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     if report.taken_at.duration_since(now) > SignedDuration::from_hours(1) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -259,6 +259,9 @@ fn destination(
             ),
         ));
     }
+    // agents before 0.9.0 send the addresses the ports listen on: only the ports are kept
+    report.listening_ports = report.ports();
+    report.listening = None;
     let name = format!("{}.json", report.taken_at.strftime("%Y%m%dT%H%M%SZ"));
     let json = serde_json::to_vec(&report).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok((reports.join(machine).join(name), json, report.taken_at))
@@ -452,6 +455,16 @@ mod tests {
             stored(&report("2026-09-20T12:00:00Z", Status::Pass)),
             Err(StatusCode::BAD_REQUEST)
         );
+        // an older agent's listening addresses are not stored, only the ports
+        let with_addresses = String::from_utf8(report("2026-10-26T12:00:00Z", Status::Pass))
+            .unwrap()
+            .replace(
+                "\"listening\":null",
+                "\"listening\":[{\"address\":\"192.168.1.5\",\"port\":22}]",
+            );
+        let (_, json, _) = destination(Path::new("/reports"), "kup", with_addresses.as_bytes(), now).unwrap();
+        let json = String::from_utf8(json).unwrap();
+        assert!(!json.contains("192.168") && json.contains("\"port\":22"));
         let renamed = String::from_utf8(report("2026-10-26T12:00:00Z", Status::Pass))
             .unwrap()
             .replace("\"firewall\"", "\"<b>firewall</b>\"");
