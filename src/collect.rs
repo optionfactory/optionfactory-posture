@@ -1,4 +1,5 @@
 use crate::machines;
+use crate::mail;
 use crate::report::{Report, Status};
 use crate::web;
 use axum::Router;
@@ -38,10 +39,10 @@ pub struct Summary {
 
 /// Stores the reports POSTed by the workstations, one directory per machine, and summarizes them after thirty days;
 /// besides them it serves its favicon and, with a login, the pages of the reports. It sits behind nginx.
-/// The file given to `collect --config`.
+/// The file given to `collect --config` and to `mail --config`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Settings {
+pub struct Settings {
     /// For the reverse proxy, which alone should reach it.
     #[serde(default = "Settings::listen")]
     listen: SocketAddr,
@@ -49,15 +50,22 @@ struct Settings {
     trusted_proxy: Option<IpAddr>,
     /// One subdirectory of reports per machine.
     #[serde(default = "Settings::reports")]
-    reports: PathBuf,
+    pub reports: PathBuf,
     /// The machines allowed to send, read again at every report.
     #[serde(default = "Settings::machines")]
-    machines: PathBuf,
+    pub machines: PathBuf,
     /// Without it the collector serves no pages.
-    login: Option<web::Login>,
+    pub login: Option<web::Login>,
+    /// Without it `mail` has nowhere to send; the collector itself does not read it.
+    pub mail: Option<mail::Mail>,
 }
 
 impl Settings {
+    pub fn read(config: &Path) -> Result<Settings, String> {
+        let settings = std::fs::read_to_string(config).map_err(|e| format!("{}: {e}", config.display()))?;
+        toml::from_str(&settings).map_err(|e| format!("{}: {e}", config.display()))
+    }
+
     fn listen() -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], 8090))
     }
@@ -70,14 +78,14 @@ impl Settings {
 }
 
 pub fn collect(config: &Path) -> Result<(), String> {
-    let settings = std::fs::read_to_string(config).map_err(|e| format!("{}: {e}", config.display()))?;
     let Settings {
         listen,
         trusted_proxy: proxy,
         reports,
         machines,
         login,
-    } = toml::from_str(&settings).map_err(|e| format!("{}: {e}", config.display()))?;
+        mail: _,
+    } = Settings::read(config)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -350,6 +358,7 @@ mod tests {
         let settings: Settings = toml::from_str(example).unwrap();
         assert_eq!(settings.trusted_proxy, Some("172.18.0.10".parse().unwrap()));
         assert!(settings.login.is_some_and(|login| login.domain.is_some()));
+        assert!(settings.mail.is_some_and(|mail| mail.port == 587));
         assert!(toml::from_str::<Settings>("lsten = \"127.0.0.1:8090\"").is_err());
     }
 

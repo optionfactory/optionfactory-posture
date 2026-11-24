@@ -89,10 +89,15 @@ outcome of each check, without times or details), deleted after twelve months. R
 employees' machines (Statuto dei lavoratori, art. 4, and the GDPR): the agent is meant to be activated only after the
 employees have been told what it collects and why.
 
-### The review: `optionfactory-posture review`
+### The review: `optionfactory-posture review` and `mail`
 
-It reads the stored reports and the list of machines and prints findings. It opens no network
-connection and writes nothing. Every report is parsed as data; one that cannot be parsed is itself a finding.
+`review` reads the stored reports and the list of machines and prints findings. It opens no network connection and
+writes nothing. Every report is parsed as data; one that cannot be parsed is itself a finding.
+
+`mail` sends the same review to the admins, and to each owner only the findings about their own machines, never those
+of others, nor the pending machines or the paths of unreadable reports. It connects only to the relay of `[mail]`,
+over STARTTLS checked against the public roots built into the binary, and refuses to go on in clear text. The HTML of
+the mails escapes what machines send, as the pages do.
 
 ## Build and supply chain
 

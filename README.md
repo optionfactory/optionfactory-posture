@@ -1,6 +1,6 @@
 # optionfactory-posture
 
-Security posture of optionfactory's developer workstations, for ISO/IEC 27001. One static binary with five commands:
+Security posture of optionfactory's developer workstations, for ISO/IEC 27001. One static binary with six commands:
 
 - `report`, on every workstation (hourly systemd timer, as root): runs the checks, queues the report and sends the
   queue to the collector.
@@ -8,6 +8,8 @@ Security posture of optionfactory's developer workstations, for ISO/IEC 27001. O
   summarizes the reports after thirty days and, with a Google login, serves the reports as pages to a list of admins
   and, for their own machines, to the owners.
 - `review`, on the server: one line per machine that needs attention, and one per pending machine.
+- `mail`, on the server (daily systemd timer): the review by mail to the admins, and to each owner the reminder of their
+  own machines.
 - `pending`, on the server: the pending machines, with the hash of their token.
 - `id`, on a workstation: its name and the hash of its token.
 
@@ -99,6 +101,12 @@ client_secret = "<its secret>"
 public_url = "https://<host>"
 admins = "/etc/optionfactory-posture/admins"
 domain = "<google workspace domain>"             # optional
+
+[mail]                                           # read only by `mail` (see Review, reminders and pending)
+relay = "smtp-relay.gmail.com"                   # STARTTLS, no credentials: the relay accepts the address of the server
+port = 587                                       # optional, 587 by default
+from = "posture-noreply@<domain>"
+admins = "admins@<domain>"
 ```
 
 The collector sits behind a reverse proxy, on an address that only the proxy should reach. With `trusted_proxy`, the
@@ -139,11 +147,13 @@ other pages, and the machines of others, are not found for them. Sessions last 1
 collector restarts. With `domain` Google offers only the accounts of that Google Workspace domain, and ID tokens of
 other domains are refused. Without `[login]` there are no pages and the collector opens no connection.
 
-## Review and pending
+## Review, reminders and pending
 
 ```bash
 optionfactory-posture review <reports> --machines <list>
 optionfactory-posture review <reports> --machines <list> --html [--pages-url https://<host>]
+optionfactory-posture review <reports> --machines <list> --owner <email> [--html [--pages-url https://<host>]]
+optionfactory-posture mail [--config /etc/optionfactory-posture/collect.conf]
 optionfactory-posture pending <reports> --machines <list>
 ```
 
@@ -157,7 +167,20 @@ failing longer than its grace: 2 hours for `firewall`, 24 for `clock-sync`, 48 f
 for the rest. Every report is read, so any that cannot be read is reported, as is one stamped more than an hour ahead.
 Directories of machines no longer on the list are skipped. With `--html` it prints the same as the body of a mail
 (inline styles, the light palette of the pages), linking each machine to its page when given `--pages-url`, and prints
-nothing when nothing needs attention. What machines send (hostnames, details) is escaped.
+nothing when nothing needs attention. What machines send (hostnames, details) is escaped. A check failing because it
+could not run (`unknown`) is reported as `could not run` rather than `failing`.
+
+With `--owner`, the reminder for one person: only the machines of that owner (case does not matter), each finding
+followed by what to do about it (the command to run, or to ask IT), without the pending machines and the unreadable
+reports, which only the admins can deal with. The HTML links to the page of the owner, which they can open with their
+own Google login. It prints nothing when their machines are in order.
+
+`mail`, meant for a daily timer, reads the settings of the collector: the reports, the list of machines, the public
+address of the pages from `[login]` and the relay from `[mail]`. When something needs attention it mails the review,
+text and HTML, to `admins`, then to each owner of a machine needing attention their reminder, from `from`. The relay
+must offer STARTTLS, checked against the public roots built into the binary, and is greeted with the domain of `from`;
+there are no credentials. When the review cannot be made (the list of machines unreadable, say), the admins get the
+error instead. A reminder that cannot be sent does not stop the others; the command then fails, naming whom it missed.
 
 `pending` prints each pending machine as a line for the list of machines, `<name> <owner> <hash>`, with `<owner>` to
 fill in, after a comment with its machine id and when it was first and last heard from.

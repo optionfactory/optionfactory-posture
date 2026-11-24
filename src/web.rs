@@ -390,7 +390,7 @@ async fn sign_out() -> Response {
         .into_response()
 }
 
-fn url_encode(text: &str) -> String {
+pub(crate) fn url_encode(text: &str) -> String {
     text.bytes()
         .map(|byte| match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (byte as char).to_string(),

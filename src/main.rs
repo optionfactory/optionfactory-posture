@@ -2,6 +2,7 @@ mod checks;
 mod collect;
 mod delivery;
 mod machines;
+mod mail;
 mod report;
 mod review;
 mod web;
@@ -58,6 +59,12 @@ enum Command {
         )]
         machines: PathBuf,
     },
+    /// Mails the review to the admins and to each owner the reminder of their own machines, with the `[mail]` section of
+    /// the settings of the collector; nothing when nothing needs attention.
+    Mail {
+        #[arg(long, default_value = "/etc/optionfactory-posture/collect.conf")]
+        config: PathBuf,
+    },
     /// Prints one line per machine of the list that needs attention, and one per machine waiting for approval.
     Review {
         /// Directory with one subdirectory of reports per machine.
@@ -68,6 +75,9 @@ enum Command {
             default_value = "/etc/optionfactory-posture/machines"
         )]
         machines: PathBuf,
+        /// The reminder of one owner: only their machines, with what to do, without the pending ones.
+        #[arg(long)]
+        owner: Option<String>,
         /// Prints an HTML mail body instead, or nothing when nothing needs attention.
         #[arg(long)]
         html: bool,
@@ -94,13 +104,15 @@ fn main() -> ExitCode {
             }
         }
         Command::Collect { config } => collect::collect(&config),
+        Command::Mail { config } => mail::send(&config),
         Command::Review {
             reports,
             machines,
+            owner,
             html,
             pages_url,
         } => machines::read(&machines)
-            .and_then(|machines| review::review(&reports, &machines, html, pages_url.as_deref())),
+            .and_then(|machines| review::review(&reports, &machines, owner.as_deref(), html, pages_url.as_deref())),
         Command::Id { state } => machines::id(&state),
         Command::Pending { reports, machines } => {
             machines::read(&machines).and_then(|machines| machines::print_pending(&reports, &machines))
