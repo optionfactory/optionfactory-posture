@@ -61,8 +61,8 @@ the machine and the queue of the reports not sent yet) also come from `POSTURE_C
 `POSTURE_STATE`. Reports wait in the queue while the collector is unreachable or the machine is not approved yet, and
 go out oldest first at the next run; a failed sending is a warning, not a failed run. The agent keeps a report the
 collector refuses with 401 (a machine not approved yet) or 5xx, and drops one refused with 400 or 413 (a fault of the
-report, which would block the queue forever). It follows no redirect: only a 2xx answer takes a report out of the
-queue. The queue is readable only by root (directory 0700, reports 0600), and reports older than thirty days, which the
+report, which would block the queue forever). It follows no redirect: a 3xx keeps the report in the queue, like any
+answer other than a 2xx, a 400 or a 413. The queue is readable only by root (directory 0700, reports 0600), and reports older than thirty days, which the
 collector would refuse, are dropped from it.
 
 The report describes the machine, never the person using it: no files, sites, applications, sessions or VPN state.
