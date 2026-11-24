@@ -1492,15 +1492,22 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_hostname_is_text_not_markup() {
+    fn a_pending_hostname_is_never_markup_even_from_an_older_collector() {
         let dir = std::env::temp_dir().join(format!("optionfactory-posture-web-pending-{}", std::process::id()));
         let web = web(&dir, "");
-        machines::record_pending(&web.reports, &"0".repeat(64), "<script>alert(1)</script>", "id").unwrap();
+        // as an older collector wrote it, before hostnames were cleaned
+        let pending = machines::pending_dir(&web.reports);
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::write(
+            pending.join(format!("{}.json", "0".repeat(64))),
+            r#"{"hostname":"<script>alert(1)</script>","machine_id":"id","first_seen":"2026-11-20T10:00:00Z"}"#,
+        )
+        .unwrap();
 
         let page = render_overview(&web, &admin(), None).unwrap().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-        assert!(!page.contains("<script>"));
+        assert!(!page.contains("<script>") && !page.contains("alert(1)"));
+        assert!(page.contains("<td>invalid</td>"));
     }
 
     #[test]

@@ -94,7 +94,7 @@ pub fn collect(config: &Path) -> Result<(), String> {
         let listener = tokio::net::TcpListener::bind(listen)
             .await
             .map_err(|e| format!("{listen}: {e}"))?;
-        tokio::spawn(summarize_expired_daily(reports.clone()));
+        tokio::spawn(apply_retention_daily(reports.clone(), machines.clone()));
         let mut app = Router::new()
             .route("/reports", post(store))
             .route(
@@ -177,7 +177,6 @@ async fn store(State((reports, machines)): State<(PathBuf, PathBuf)>, headers: H
         if let Ok(report) = serde_json::from_slice::<Report>(&body) {
             let recorded = tokio::task::spawn_blocking(move || {
                 machines::record_pending(&reports, &token_sha256, &report.hostname, &report.machine_id)
-                    .map(|new| new.then_some(report.hostname))
             })
             .await;
             if let Ok(Ok(Some(hostname))) = recorded {
@@ -239,12 +238,21 @@ fn destination(
     Ok((reports.join(machine).join(name), json, report.taken_at))
 }
 
-async fn summarize_expired_daily(reports: PathBuf) {
+/// Once a day: expired reports become summaries, expired summaries go, and so do the pending machines approved since or
+/// silent for a month.
+async fn apply_retention_daily(reports: PathBuf, machines: PathBuf) {
     let mut daily = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
     loop {
         daily.tick().await;
-        let reports = reports.clone();
-        if let Err(e) = tokio::task::spawn_blocking(move || summarize_expired(&reports, Timestamp::now())).await {
+        let (reports, machines) = (reports.clone(), machines.clone());
+        let retention = tokio::task::spawn_blocking(move || {
+            summarize_expired(&reports, Timestamp::now());
+            match machines::read(&machines) {
+                Ok(machines) => machines::forget_pending(&reports, &machines),
+                Err(e) => eprintln!("optionfactory-posture: retention: {e}"),
+            }
+        });
+        if let Err(e) = retention.await {
             eprintln!("optionfactory-posture: retention: {e}");
         }
     }

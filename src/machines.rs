@@ -5,8 +5,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Unknown tokens are recorded so that an admin can approve them; the collector is public, so their number is bounded.
-const MOST_PENDING: usize = 100;
+/// Unknown tokens are recorded so that an admin can see them waiting; the collector is public, so their number is
+/// bounded. Approving does not need the list: the hash comes from `optionfactory-posture id` on the machine itself.
+const MOST_PENDING: usize = 20;
 /// A pending machine not heard from in a month is forgotten.
 const PENDING_EXPIRY: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
@@ -114,13 +115,39 @@ pub struct Pending {
     pub first_seen: Timestamp,
 }
 
+impl Pending {
+    /// Anyone can send them, and they reach the admins' mail and terminal: only a hostname and a hex machine id are
+    /// kept, anything else is `invalid`.
+    fn cleaned(self) -> Pending {
+        let hostname = self.hostname.to_ascii_lowercase();
+        let valid_hostname = !hostname.is_empty()
+            && hostname.len() <= 64
+            && hostname
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.');
+        let valid_id = !self.machine_id.is_empty()
+            && self.machine_id.len() <= 64
+            && self.machine_id.chars().all(|c| c.is_ascii_hexdigit());
+        Pending {
+            hostname: if valid_hostname { hostname } else { "invalid".to_string() },
+            machine_id: if valid_id { self.machine_id } else { "invalid".to_string() },
+            first_seen: self.first_seen,
+        }
+    }
+}
+
 pub fn pending_dir(reports: &Path) -> PathBuf {
     // a dot keeps it apart from the machines, whose names have none
     reports.join(".pending")
 }
 
-/// Records or refreshes a pending machine; returns whether it is new.
-pub fn record_pending(reports: &Path, token_sha256: &str, hostname: &str, machine_id: &str) -> std::io::Result<bool> {
+/// Records or refreshes a pending machine; returns its cleaned hostname when it is new.
+pub fn record_pending(
+    reports: &Path,
+    token_sha256: &str,
+    hostname: &str,
+    machine_id: &str,
+) -> std::io::Result<Option<String>> {
     let dir = pending_dir(reports);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{token_sha256}.json"));
@@ -129,24 +156,34 @@ pub fn record_pending(reports: &Path, token_sha256: &str, hostname: &str, machin
             .write(true)
             .open(&path)?
             .set_modified(SystemTime::now())?;
-        return Ok(false);
+        return Ok(None);
     }
     if std::fs::read_dir(&dir)?.count() >= MOST_PENDING {
-        return Ok(false);
+        return Ok(None);
     }
     let pending = Pending {
-        hostname: hostname.chars().take(64).collect(),
-        machine_id: machine_id.chars().take(64).collect(),
+        hostname: hostname.to_string(),
+        machine_id: machine_id.to_string(),
         first_seen: Timestamp::now()
             .round(jiff::Unit::Second)
             .unwrap_or(Timestamp::UNIX_EPOCH),
-    };
+    }
+    .cleaned();
     std::fs::write(&path, serde_json::to_vec(&pending)?)?;
-    Ok(true)
+    Ok(Some(pending.hostname))
 }
 
-/// The pending machines, with the hash of their token and when they were last heard from, oldest first. Approved ones
-/// and those silent for a month are removed.
+/// A file of the pending directory: the hash of the token, and whether it is to forget, approved or silent for a month.
+fn pending_entry(entry: &std::fs::DirEntry, machines: &[Machine]) -> Option<(String, bool)> {
+    let hash = entry.path().file_stem()?.to_string_lossy().into_owned();
+    let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
+    let expired = modified.elapsed().is_ok_and(|age| age > PENDING_EXPIRY);
+    let forgotten = expired || approved(machines, &hash).is_some();
+    Some((hash, forgotten))
+}
+
+/// The pending machines, with the hash of their token and when they were last heard from, oldest first; without the
+/// approved ones and those silent for a month, which the collector removes once a day. Reads only.
 pub fn pending(reports: &Path, machines: &[Machine]) -> Result<Vec<(String, Pending, Timestamp)>, String> {
     let dir = pending_dir(reports);
     let entries = match std::fs::read_dir(&dir) {
@@ -157,21 +194,30 @@ pub fn pending(reports: &Path, machines: &[Machine]) -> Result<Vec<(String, Pend
     let mut found: Vec<_> = entries
         .flatten()
         .filter_map(|entry| {
-            let path = entry.path();
-            let hash = path.file_stem()?.to_string_lossy().into_owned();
-            let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
-            let expired = modified.elapsed().is_ok_and(|age| age > PENDING_EXPIRY);
-            if expired || approved(machines, &hash).is_some() {
-                let _ = std::fs::remove_file(&path);
+            let (hash, forgotten) = pending_entry(&entry, machines)?;
+            if forgotten {
                 return None;
             }
-            let pending: Pending = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+            let pending: Pending = serde_json::from_slice(&std::fs::read(entry.path()).ok()?).ok()?;
+            let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
             let last_seen = Timestamp::try_from(modified).ok()?.round(jiff::Unit::Second).ok()?;
-            Some((hash, pending, last_seen))
+            Some((hash, pending.cleaned(), last_seen))
         })
         .collect();
     found.sort_by_key(|(_, pending, _)| pending.first_seen);
     Ok(found)
+}
+
+/// Removes the pending machines approved since, and those silent for a month.
+pub fn forget_pending(reports: &Path, machines: &[Machine]) {
+    let Ok(entries) = std::fs::read_dir(pending_dir(reports)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if pending_entry(&entry, machines).is_some_and(|(_, forgotten)| forgotten) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Prints the pending machines as lines of the list of machines, with a placeholder for their owner.
@@ -190,6 +236,24 @@ pub fn print_pending(reports: &Path, machines: &[Machine]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_machine_keeps_only_a_hostname_and_a_hex_machine_id() {
+        let pending = |hostname: &str, machine_id: &str| {
+            let cleaned = Pending {
+                hostname: hostname.to_string(),
+                machine_id: machine_id.to_string(),
+                first_seen: Timestamp::UNIX_EPOCH,
+            }
+            .cleaned();
+            (cleaned.hostname, cleaned.machine_id)
+        };
+        assert_eq!(pending("Kup.office", "0123abcd"), ("kup.office".into(), "0123abcd".into()));
+        assert_eq!(
+            pending("x\nkup (mario@x): firewall failing", "<b>"),
+            ("invalid".into(), "invalid".into())
+        );
+    }
 
     #[test]
     fn a_machine_is_known_by_the_hash_of_its_token() {

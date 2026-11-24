@@ -79,10 +79,11 @@ report. The name becomes the directory of the reports of the machine: `[a-z0-9-]
 
 At its first run the agent creates its token, random and readable only by root, in `<state>/token`. The collector
 answers 401 to a token not on the list and records the machine as pending in `<reports>/.pending`, with the hostname
-and the machine id its report claims. Anyone can send a report under any hostname: what identifies the machine is the
-hash of its token, which `pending` and `review` print on the server and `id` prints on the machine itself. Once on the
-list, the machine sends its whole queue at its next run; taken off the list, it can no longer send. At most 100
-machines wait at a time, and one silent for a month is forgotten.
+and the machine id its report claims, kept only when they are a hostname (letters, digits, dots and dashes) and a hex
+id, `invalid` otherwise. Anyone can send a report under any hostname: what identifies the machine is the hash of its
+token, which `pending` and `review` print on the server and `id` prints on the machine itself. Once on the list, the
+machine sends its whole queue at its next run; taken off the list, it can no longer send. At most 20 machines wait at
+a time; once a day the collector forgets the ones approved since and those silent for a month.
 
 ## Collect
 
